@@ -84,6 +84,7 @@ pub mod contracts {
         market.total_pool = 0;
         market.creator_fee_bps = fee_bps;
         market.protocol_fee_bps = 50; // Default 0.5% protocol fee
+        market.stakes_per_outcome = vec![0; market.outcomes.len()]; // Initialize stakes per outcome
         market.bump = ctx.bumps.market;
         
         // Update creator profile
@@ -100,22 +101,20 @@ pub mod contracts {
         outcome_index: u8,
         amount: u64,
     ) -> Result<()> {
+        // Validate outcome index
         let market = &mut ctx.accounts.market;
-        
-        // Validations
-        require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
-        
-        let clock = Clock::get()?;
-        require!(
-            clock.unix_timestamp < market.deadline,
-            ErrorCode::MarketClosed
-        );
-        
         require!(
             (outcome_index as usize) < market.outcomes.len(),
             ErrorCode::InvalidOutcomeIndex
         );
-
+        
+        // Can't stake on resolved markets
+        require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
+        
+        // Check that the deadline hasn't passed
+        let current_time = Clock::get()?.unix_timestamp;
+        require!(market.deadline > current_time, ErrorCode::MarketExpired);
+        
         // Transfer tokens from user to market vault
         let cpi_accounts = Transfer {
             from: ctx.accounts.user_token_account.to_account_info(),
@@ -128,24 +127,30 @@ pub mod contracts {
         
         token::transfer(cpi_ctx, amount)?;
         
-        // Update market total pool
-        market.total_pool = market.total_pool.checked_add(amount).unwrap();
-        
-        // Create prediction record
+        // Update the prediction
         let prediction = &mut ctx.accounts.prediction;
+        prediction.market = market.key();
         prediction.user = ctx.accounts.user.key();
-        prediction.market = ctx.accounts.market.key();
         prediction.outcome_index = outcome_index;
         prediction.amount = amount;
+        prediction.timestamp = current_time;
         prediction.claimed = false;
-        prediction.bump = ctx.bumps.prediction;
+        prediction.bump = *ctx.bumps.get("prediction").unwrap();
         
-        // Update creator profile stats
-        let creator_profile = &mut ctx.accounts.creator_profile;
-        creator_profile.total_volume = creator_profile.total_volume.checked_add(amount).unwrap();
-        creator_profile.traction_score = creator_profile.traction_score.checked_add(1).unwrap();
+        // Update the market total pool
+        market.total_pool = market.total_pool.checked_add(amount).unwrap();
         
-        msg!("Prediction staked: {} on outcome {}", amount, outcome_index);
+        // Update stakes per outcome - ensure array is initialized with enough elements
+        if market.stakes_per_outcome.len() < market.outcomes.len() {
+            // Initialize stakes_per_outcome with zeros for each outcome if not already done
+            market.stakes_per_outcome = vec![0; market.outcomes.len()];
+        }
+        
+        // Update the total staked for this outcome
+        market.stakes_per_outcome[outcome_index as usize] = 
+            market.stakes_per_outcome[outcome_index as usize].checked_add(amount).unwrap();
+        
+        msg!("Staked {} on outcome {}", amount, outcome_index);
         Ok(())
     }
 
@@ -238,19 +243,46 @@ pub mod contracts {
         require!(market.resolved, ErrorCode::MarketNotResolved);
         require!(!prediction.claimed, ErrorCode::RewardAlreadyClaimed);
         
-        // Verify winning outcome
+        // Verify winning outcome exists and matches user's prediction
         let winning_outcome = market.winning_outcome.ok_or(ErrorCode::NoWinningOutcome)?;
         require!(
             prediction.outcome_index == winning_outcome,
             ErrorCode::NotWinningPrediction
         );
         
-        // Calculate reward
-        // (In a real implementation, you would calculate proportional to stake amount / winning outcome total)
-        // This is simplified and assumes we have all predictions loaded
-        let reward_amount = prediction.amount; // Simplified calculation
+        // Get total staked on winning outcome
+        let total_winning_stakes = market.stakes_per_outcome[winning_outcome as usize];
+        require!(total_winning_stakes > 0, ErrorCode::InvalidDistribution);
         
-        // Transfer reward from vault to user
+        // Calculate user's proportional share of the total pool
+        // (user_stake / total_winning_stakes) * total_pool
+        let user_stake = prediction.amount;
+        let total_pool = market.total_pool;
+        
+        let user_share_numerator = (user_stake as u128).checked_mul(total_pool as u128).unwrap();
+        let user_share = user_share_numerator.checked_div(total_winning_stakes as u128).unwrap();
+        
+        // Calculate fees
+        let creator_fee_amount = user_share
+            .checked_mul(market.creator_fee_bps as u128)
+            .unwrap()
+            .checked_div(10000)
+            .unwrap();
+        
+        let protocol_fee_amount = user_share
+            .checked_mul(market.protocol_fee_bps as u128)
+            .unwrap()
+            .checked_div(10000)
+            .unwrap();
+        
+        // Final reward amount after fees
+        let reward_amount = user_share
+            .checked_sub(creator_fee_amount)
+            .unwrap()
+            .checked_sub(protocol_fee_amount)
+            .unwrap() as u64;
+        
+        // Get market PDA signer seeds
         let market_key = market.key();
         let seeds = &[
             b"market".as_ref(),
@@ -259,21 +291,59 @@ pub mod contracts {
         ];
         let signer = &[&seeds[..]];
         
-        let cpi_accounts = Transfer {
-            from: ctx.accounts.market_vault.to_account_info(),
-            to: ctx.accounts.user_token_account.to_account_info(),
-            authority: ctx.accounts.market.to_account_info(),
-        };
+        // 1. Transfer reward to user
+        {
+            let cpi_accounts = Transfer {
+                from: ctx.accounts.market_vault.to_account_info(),
+                to: ctx.accounts.user_token_account.to_account_info(),
+                authority: ctx.accounts.market.to_account_info(),
+            };
+            
+            let cpi_program = ctx.accounts.token_program.to_account_info();
+            let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
+            
+            token::transfer(cpi_ctx, reward_amount)?;
+        }
         
-        let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
+        // 2. Transfer creator fee
+        if creator_fee_amount > 0 {
+            let cpi_accounts = Transfer {
+                from: ctx.accounts.market_vault.to_account_info(),
+                to: ctx.accounts.creator_token_account.to_account_info(),
+                authority: ctx.accounts.market.to_account_info(),
+            };
+            
+            let cpi_program = ctx.accounts.token_program.to_account_info();
+            let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
+            
+            token::transfer(cpi_ctx, creator_fee_amount as u64)?;
+        }
         
-        token::transfer(cpi_ctx, reward_amount)?;
+        // 3. Transfer protocol fee
+        if protocol_fee_amount > 0 {
+            let cpi_accounts = Transfer {
+                from: ctx.accounts.market_vault.to_account_info(),
+                to: ctx.accounts.protocol_fee_account.to_account_info(),
+                authority: ctx.accounts.market.to_account_info(),
+            };
+            
+            let cpi_program = ctx.accounts.token_program.to_account_info();
+            let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
+            
+            token::transfer(cpi_ctx, protocol_fee_amount as u64)?;
+        }
         
         // Mark prediction as claimed
         prediction.claimed = true;
         
-        msg!("Reward claimed: {}", reward_amount);
+        msg!(
+            "Reward claimed: total={}, user={}, creator_fee={}, protocol_fee={}",
+            user_share,
+            reward_amount,
+            creator_fee_amount,
+            protocol_fee_amount
+        );
+        
         Ok(())
     }
 
@@ -311,7 +381,7 @@ pub struct CreateCreatorProfile<'info> {
 
 #[derive(Accounts)]
 pub struct InitializeMarket<'info> {
-    #[account(mut)]
+    #[account(mut)]     
     pub creator: Signer<'info>,
     
     #[account(
@@ -452,6 +522,21 @@ pub struct ClaimReward<'info> {
     )]
     pub user_token_account: Account<'info, TokenAccount>,
     
+    // Add creator token account to receive fees
+    #[account(
+        mut,
+        constraint = creator_token_account.owner == market.creator,
+        constraint = creator_token_account.mint == market_vault.mint
+    )]
+    pub creator_token_account: Account<'info, TokenAccount>,
+    
+    // Add protocol fee account
+    #[account(
+        mut,
+        constraint = protocol_fee_account.mint == market_vault.mint
+    )]
+    pub protocol_fee_account: Account<'info, TokenAccount>,
+    
     pub token_program: Program<'info, Token>,
 }
 
@@ -485,7 +570,7 @@ pub struct Market {
     pub question: String,
     pub outcomes: Vec<String>,
     pub ai_score: f32,
-    pub market_type: u8, // 0 = TimeBound, 1 = OpenEnded
+    pub market_type: u8, // Open Ended or Time Bound
     pub deadline: i64,
     pub ai_suggested_deadline: i64,
     pub resolved: bool,
@@ -493,6 +578,7 @@ pub struct Market {
     pub total_pool: u64,
     pub creator_fee_bps: u16,
     pub protocol_fee_bps: u16,
+    pub stakes_per_outcome: Vec<u64>, // Track stakes per outcome for fair distribution
     pub bump: u8,
 }
 
@@ -509,8 +595,9 @@ impl Market {
                             8 + // total_pool
                             2 + // creator_fee_bps
                             2 + // protocol_fee_bps
+                            4 + 5 * 8 + // stakes_per_outcome (5 outcomes max)
                             1 + // bump
-                            100; // padding
+                            50; // padding
 }
 
 #[account]
@@ -520,6 +607,7 @@ pub struct Prediction {
     pub market: Pubkey,
     pub outcome_index: u8,
     pub amount: u64,
+    pub timestamp: i64,
     pub claimed: bool,
     pub bump: u8,
 }
@@ -529,9 +617,10 @@ impl Prediction {
                             32 + // market
                             1 + // outcome_index
                             8 + // amount
+                            8 + // timestamp
                             1 + // claimed
                             1 + // bump
-                            50; // padding
+                            30; // padding
 }
 
 #[account]
@@ -548,7 +637,7 @@ impl OutcomeVote {
                             32 + // voter
                             1 + // outcome_index
                             1 + // bump
-                            30; // padding
+                            20; // padding
 }
 
 #[account]
@@ -571,7 +660,7 @@ impl CreatorProfile {
                             8 + // traction_score
                             1 + // tier
                             1 + // bump
-                            50; // padding
+                            30; // padding
 }
 
 #[error_code]
@@ -629,8 +718,13 @@ pub enum ErrorCode {
     
     #[msg("Not a winning prediction.")]
     NotWinningPrediction,
+    
+    #[msg("Invalid distribution.")]
+    InvalidDistribution,
+    
+    #[msg("Market has expired. The deadline has passed.")]
+    MarketExpired,
 }
-
 #[derive(Clone, Copy, PartialEq)]
 pub enum MarketType {
     TimeBound = 0,
