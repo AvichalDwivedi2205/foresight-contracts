@@ -135,7 +135,7 @@ pub mod contracts {
         prediction.amount = amount;
         prediction.timestamp = current_time;
         prediction.claimed = false;
-        prediction.bump = *ctx.bumps.get("prediction").unwrap();
+        prediction.bump = ctx.bumps.prediction;
         
         // Update the market total pool
         market.total_pool = market.total_pool.checked_add(amount).unwrap();
