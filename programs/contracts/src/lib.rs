@@ -175,7 +175,6 @@ pub mod contracts {
         
         token::transfer(cpi_ctx, amount)?;
         
-        // Update the prediction
         let prediction = &mut ctx.accounts.prediction;
         prediction.market = market.key();
         prediction.user = ctx.accounts.user.key();
@@ -185,16 +184,12 @@ pub mod contracts {
         prediction.claimed = false;
         prediction.bump = ctx.bumps.prediction;
         
-        // Update the market total pool
         market.total_pool = market.total_pool.checked_add(amount).unwrap();
         
-        // Update stakes per outcome - ensure array is initialized with enough elements
         if market.stakes_per_outcome.len() < market.outcomes.len() {
-            // Initialize stakes_per_outcome with zeros for each outcome if not already done
             market.stakes_per_outcome = vec![0; market.outcomes.len()];
         }
         
-        // Update the total staked for this outcome
         market.stakes_per_outcome[outcome_index as usize] = 
             market.stakes_per_outcome[outcome_index as usize].checked_add(amount).unwrap();
         
@@ -208,7 +203,6 @@ pub mod contracts {
     ) -> Result<()> {
         let market = &ctx.accounts.market;
         
-        // Validations
         require!(
             market.market_type == MarketType::OpenEnded as u8,
             ErrorCode::NotOpenEndedMarket
@@ -234,7 +228,6 @@ pub mod contracts {
             ErrorCode::InvalidOutcomeIndex
         );
         
-        // Record vote
         let vote = &mut ctx.accounts.outcome_vote;
         vote.market = market.key();
         vote.voter = ctx.accounts.voter.key();
@@ -251,17 +244,14 @@ pub mod contracts {
     ) -> Result<()> {
         let market = &mut ctx.accounts.market;
         
-        // Only admin can resolve
         let admin_key = ctx.accounts.admin.key();
         require!(
             admin_key == ctx.accounts.admin.key(),
             ErrorCode::Unauthorized
         );
         
-        // Can't resolve already resolved markets
         require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
         
-        // For time-bound markets, winning_outcome_index must be provided
         if market.market_type == MarketType::TimeBound as u8 {
             // Validate outcome index
             let outcome = winning_outcome_index.ok_or(ErrorCode::WinningOutcomeRequired)?;
@@ -285,30 +275,24 @@ pub mod contracts {
         let market = &ctx.accounts.market;
         let prediction = &mut ctx.accounts.prediction;
         
-        // Validations
         require!(market.resolved, ErrorCode::MarketNotResolved);
         require!(!prediction.claimed, ErrorCode::RewardAlreadyClaimed);
-        
-        // Verify winning outcome exists and matches user's prediction
+
         let winning_outcome = market.winning_outcome.ok_or(ErrorCode::NoWinningOutcome)?;
         require!(
             prediction.outcome_index == winning_outcome,
             ErrorCode::NotWinningPrediction
         );
         
-        // Get total staked on winning outcome
         let total_winning_stakes = market.stakes_per_outcome[winning_outcome as usize];
         require!(total_winning_stakes > 0, ErrorCode::InvalidDistribution);
         
-        // Calculate user's proportional share of the total pool
-        // (user_stake / total_winning_stakes) * total_pool
         let user_stake = prediction.amount;
         let total_pool = market.total_pool;
         
         let user_share_numerator = (user_stake as u128).checked_mul(total_pool as u128).unwrap();
         let user_share = user_share_numerator.checked_div(total_winning_stakes as u128).unwrap();
         
-        // Calculate fees
         let creator_fee_amount = user_share
             .checked_mul(market.creator_fee_bps as u128)
             .unwrap()
@@ -321,14 +305,12 @@ pub mod contracts {
             .checked_div(10000)
             .unwrap();
         
-        // Final reward amount after fees
         let reward_amount = user_share
             .checked_sub(creator_fee_amount)
             .unwrap()
             .checked_sub(protocol_fee_amount)
             .unwrap() as u64;
         
-        // Get market PDA signer seeds
         let market_key = market.key();
         let seeds = &[
             b"market".as_ref(),
@@ -337,7 +319,6 @@ pub mod contracts {
         ];
         let signer = &[&seeds[..]];
         
-        // 1. Transfer reward to user
         {
             let cpi_accounts = Transfer {
                 from: ctx.accounts.market_vault.to_account_info(),
@@ -351,7 +332,6 @@ pub mod contracts {
             token::transfer(cpi_ctx, reward_amount)?;
         }
         
-        // 2. Transfer creator fee
         if creator_fee_amount > 0 {
             let cpi_accounts = Transfer {
                 from: ctx.accounts.market_vault.to_account_info(),
@@ -365,7 +345,6 @@ pub mod contracts {
             token::transfer(cpi_ctx, creator_fee_amount as u64)?;
         }
         
-        // 3. Transfer protocol fee
         if protocol_fee_amount > 0 {
             let cpi_accounts = Transfer {
                 from: ctx.accounts.market_vault.to_account_info(),
@@ -379,7 +358,6 @@ pub mod contracts {
             token::transfer(cpi_ctx, protocol_fee_amount as u64)?;
         }
         
-        // Mark prediction as claimed
         prediction.claimed = true;
         
         msg!(
@@ -539,7 +517,7 @@ pub mod contracts {
         require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
         
         let clock = Clock::get()?;
-        let voting_deadline = market.deadline.checked_add(15 * 24 * 60 * 60).unwrap(); // 15 days
+        let voting_deadline = market.deadline.checked_add(15 * 24 * 60 * 60).unwrap();
         
         require!(
             clock.unix_timestamp > voting_deadline,
@@ -587,7 +565,7 @@ pub mod contracts {
         require!(vote_result.resolution_proposed, ErrorCode::NoProposedResolution);
         
         let clock = Clock::get()?;
-        let challenge_deadline = vote_result.proposal_time.checked_add(48 * 60 * 60).unwrap(); // 48 hours
+        let challenge_deadline = vote_result.proposal_time.checked_add(48 * 60 * 60).unwrap(); 
         
         require!(
             clock.unix_timestamp > challenge_deadline,
@@ -627,7 +605,7 @@ pub mod contracts {
         require!(!vote_result.finalized, ErrorCode::ResolutionFinalized);
         
         let clock = Clock::get()?;
-        let challenge_deadline = vote_result.proposal_time.checked_add(48 * 60 * 60).unwrap(); // 48 hours
+        let challenge_deadline = vote_result.proposal_time.checked_add(48 * 60 * 60).unwrap(); 
         
         require!(
             clock.unix_timestamp <= challenge_deadline,
@@ -796,7 +774,7 @@ pub struct VoteMarketOutcome<'info> {
 #[derive(Accounts)]
 pub struct ResolveMarket<'info> {
     #[account(mut)]
-    pub admin: Signer<'info>, // Protocol admin
+    pub admin: Signer<'info>,
     
     #[account(mut)]
     pub market: Account<'info, Market>,
@@ -837,7 +815,6 @@ pub struct ClaimReward<'info> {
     )]
     pub user_token_account: Account<'info, TokenAccount>,
     
-    // Add creator token account to receive fees
     #[account(
         mut,
         constraint = creator_token_account.owner == market.creator,
@@ -845,7 +822,6 @@ pub struct ClaimReward<'info> {
     )]
     pub creator_token_account: Account<'info, TokenAccount>,
     
-    // Add protocol fee account
     #[account(
         mut,
         constraint = protocol_fee_account.mint == market_vault.mint
@@ -858,7 +834,7 @@ pub struct ClaimReward<'info> {
 #[derive(Accounts)]
 pub struct CloseMarket<'info> {
     #[account(mut)]
-    pub admin: Signer<'info>, // Protocol admin
+    pub admin: Signer<'info>,
     
     #[account(
         mut,
@@ -871,7 +847,7 @@ pub struct CloseMarket<'info> {
         mut,
         seeds = [b"market_vault", market.key().as_ref()],
         bump,
-        constraint = market_vault.amount == 0 // Ensure all funds are distributed
+        constraint = market_vault.amount == 0 
     )]
     pub market_vault: Account<'info, TokenAccount>,
     
@@ -881,12 +857,11 @@ pub struct CloseMarket<'info> {
 #[derive(Accounts)]
 pub struct RegisterVoteAuthority<'info> {
     #[account(mut)]
-    pub admin: Signer<'info>, // Protocol admin
+    pub admin: Signer<'info>,
     
     #[account(mut)]
     pub market: Account<'info, Market>,
     
-    /// The account that will be granted voting authority
     pub authority: SystemAccount<'info>,
     
     #[account(
@@ -904,7 +879,7 @@ pub struct RegisterVoteAuthority<'info> {
 #[derive(Accounts)]
 pub struct InitializeVoteResult<'info> {
     #[account(mut)]
-    pub admin: Signer<'info>, // Protocol admin
+    pub admin: Signer<'info>,
     
     #[account(mut)]
     pub market: Account<'info, Market>,
@@ -983,7 +958,7 @@ pub struct ProposeResolution<'info> {
 #[derive(Accounts)]
 pub struct FinalizeResolution<'info> {
     #[account(mut)]
-    pub admin: Signer<'info>, // Protocol admin
+    pub admin: Signer<'info>, 
     
     #[account(mut)]
     pub market: Account<'info, Market>,
@@ -1023,7 +998,7 @@ pub struct Market {
     pub question: String,
     pub outcomes: Vec<String>,
     pub ai_score: f32,
-    pub market_type: u8, // Open Ended or Time Bound
+    pub market_type: u8, 
     pub deadline: i64,
     pub ai_suggested_deadline: i64,
     pub resolved: bool,
@@ -1031,8 +1006,8 @@ pub struct Market {
     pub total_pool: u64,
     pub creator_fee_bps: u16,
     pub protocol_fee_bps: u16,
-    pub stakes_per_outcome: Vec<u64>, // Track stakes per outcome for fair distribution
-    pub ai_resolvable: bool, // Flag indicating if this market can be resolved by AI
+    pub stakes_per_outcome: Vec<u64>, 
+    pub ai_resolvable: bool, 
     pub bump: u8,
 }
 
@@ -1120,9 +1095,9 @@ impl CreatorProfile {
 
 #[account]
 pub struct AIResolver {
-    pub authority: Pubkey,       // The authorized AI service public key
-    pub active: bool,            // Whether this resolver is active
-    pub resolution_count: u64,   // Number of markets resolved
+    pub authority: Pubkey,       // Ai service pub key
+    pub active: bool,            
+    pub resolution_count: u64,   
     pub bump: u8,
 }
 
