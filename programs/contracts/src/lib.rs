@@ -3,6 +3,45 @@ use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
 declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
 
+// Emitted events for off-chain indexing
+#[event]
+pub struct MarketCreatedEvent {
+    pub market: Pubkey,
+    pub creator: Pubkey,
+    pub question: String,
+    pub deadline: i64,
+    pub market_type: u8,
+}
+
+#[event]
+pub struct PredictionStakedEvent {
+    pub user: Pubkey,
+    pub market: Pubkey,
+    pub outcome_index: u8,
+    pub amount: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct RewardClaimedEvent {
+    pub user: Pubkey,
+    pub market: Pubkey,
+    pub amount: u64,
+    pub outcome_index: u8,
+    pub winning_stake: u64,
+    pub total_stake: u64,
+}
+
+#[event]
+pub struct CreatorTierChangedEvent {
+    pub creator: Pubkey,
+    pub previous_tier: u8,
+    pub new_tier: u8,
+    pub markets_count: u32,
+    pub total_volume: u64,
+    pub traction_score: u64,
+}
+
 #[program]
 pub mod contracts {
     use super::*;
@@ -144,6 +183,15 @@ pub mod contracts {
         creator_profile.last_created_at = clock.unix_timestamp;
         creator_profile.markets_created = creator_profile.markets_created.checked_add(1).unwrap();
 
+        // Emit market creation event for indexer
+        emit!(MarketCreatedEvent {
+            market: market.key(),
+            creator: ctx.accounts.creator.key(),
+            question: question.clone(),
+            deadline: ai_recommended_resolution_time,
+            market_type: ai_classification,
+        });
+
         msg!("Market initialized: {} (metadata: {})", question, creator_metadata);
         Ok(())
     }
@@ -192,6 +240,54 @@ pub mod contracts {
         
         market.stakes_per_outcome[outcome_index as usize] = 
             market.stakes_per_outcome[outcome_index as usize].checked_add(amount).unwrap();
+        
+        // Update creator profile stats
+        let creator_profile = &mut ctx.accounts.creator_profile;
+        creator_profile.total_volume = creator_profile.total_volume.checked_add(amount).unwrap();
+        
+        // For traction score, we increase it based on activity
+        // The score increases more when:
+        // - Multiple users participate in a market
+        // - Higher amounts are staked
+        creator_profile.traction_score = creator_profile.traction_score.checked_add(amount / 1000 + 1).unwrap();
+        
+        // Update user profile if provided
+        if let Some(user_profile) = &mut ctx.accounts.user_profile {
+            user_profile.total_staked = user_profile.total_staked.checked_add(amount).unwrap();
+            user_profile.total_predictions = user_profile.total_predictions.checked_add(1).unwrap();
+            user_profile.last_active_ts = current_time;
+        }
+        
+        // Check if creator tier needs to be updated
+        let previous_tier = creator_profile.tier;
+        if let Some(creator_tier_threshold) = get_next_tier_threshold(creator_profile) {
+            if creator_profile.total_volume >= creator_tier_threshold.0 && 
+               creator_profile.markets_created >= creator_tier_threshold.1 && 
+               creator_profile.traction_score >= creator_tier_threshold.2 {
+                creator_profile.tier = creator_profile.tier.checked_add(1).unwrap();
+                
+                // Emit event if tier changed
+                if creator_profile.tier != previous_tier {
+                    emit!(CreatorTierChangedEvent {
+                        creator: creator_profile.creator,
+                        previous_tier,
+                        new_tier: creator_profile.tier,
+                        markets_count: creator_profile.markets_created,
+                        total_volume: creator_profile.total_volume,
+                        traction_score: creator_profile.traction_score,
+                    });
+                }
+            }
+        }
+        
+        // Emit prediction staked event for indexers
+        emit!(PredictionStakedEvent {
+            user: ctx.accounts.user.key(),
+            market: market.key(),
+            outcome_index,
+            amount,
+            timestamp: current_time,
+        });
         
         msg!("Staked {} on outcome {}", amount, outcome_index);
         Ok(())
@@ -359,6 +455,51 @@ pub mod contracts {
         }
         
         prediction.claimed = true;
+        
+        // Update user profile if provided to track winnings
+        if let Some(user_profile) = &mut ctx.accounts.user_profile {
+            user_profile.total_winnings = user_profile.total_winnings.checked_add(reward_amount).unwrap();
+            user_profile.winning_predictions = user_profile.winning_predictions.checked_add(1).unwrap();
+            user_profile.last_active_ts = Clock::get()?.unix_timestamp;
+        }
+        
+        // Update creator profile with additional volume and traction
+        if let Some(creator_profile) = &mut ctx.accounts.creator_profile {
+            // Successful predictions increase traction score more
+            creator_profile.traction_score = creator_profile.traction_score.checked_add(reward_amount / 500 + 5).unwrap();
+            
+            let previous_tier = creator_profile.tier;
+            // Check if creator tier needs to be updated
+            if let Some(creator_tier_threshold) = get_next_tier_threshold(creator_profile) {
+                if creator_profile.total_volume >= creator_tier_threshold.0 && 
+                   creator_profile.markets_created >= creator_tier_threshold.1 && 
+                   creator_profile.traction_score >= creator_tier_threshold.2 {
+                    creator_profile.tier = creator_profile.tier.checked_add(1).unwrap();
+                    
+                    // Emit event if tier changed
+                    if creator_profile.tier != previous_tier {
+                        emit!(CreatorTierChangedEvent {
+                            creator: creator_profile.creator,
+                            previous_tier,
+                            new_tier: creator_profile.tier,
+                            markets_count: creator_profile.markets_created,
+                            total_volume: creator_profile.total_volume,
+                            traction_score: creator_profile.traction_score,
+                        });
+                    }
+                }
+            }
+        }
+        
+        // Emit reward claimed event for indexers
+        emit!(RewardClaimedEvent {
+            user: ctx.accounts.user.key(),
+            market: market.key(),
+            amount: reward_amount,
+            outcome_index: prediction.outcome_index,
+            winning_stake: user_stake,
+            total_stake: total_pool,
+        });
         
         msg!(
             "Reward claimed: total={}, user={}, creator_fee={}, protocol_fee={}",
@@ -618,6 +759,100 @@ pub mod contracts {
         msg!("Resolution challenged with evidence: {}", evidence);
         Ok(())
     }
+
+    pub fn initialize_protocol_stats(ctx: Context<InitializeProtocolStats>) -> Result<()> {
+        let stats = &mut ctx.accounts.protocol_stats;
+        
+        stats.total_volume = 0;
+        stats.total_markets = 0;
+        stats.total_users = 0;
+        stats.total_stakes = 0;
+        stats.resolved_markets = Vec::new();
+        stats.last_updated_ts = Clock::get()?.unix_timestamp;
+        stats.bump = ctx.bumps.protocol_stats;
+        
+        msg!("Protocol stats initialized");
+        Ok(())
+    }
+
+    pub fn initialize_user_profile(ctx: Context<InitializeUserProfile>) -> Result<()> {
+        let profile = &mut ctx.accounts.user_profile;
+        let user = ctx.accounts.user.key();
+
+        profile.user = user;
+        profile.total_staked = 0;
+        profile.total_winnings = 0;
+        profile.total_predictions = 0;
+        profile.winning_predictions = 0;
+        profile.last_active_ts = Clock::get()?.unix_timestamp;
+        profile.bump = ctx.bumps.user_profile;
+
+        msg!("User profile created for {}", user);
+        Ok(())
+    }
+
+    pub fn update_creator_tier(ctx: Context<UpdateCreatorTier>) -> Result<()> {
+        let creator_profile = &mut ctx.accounts.creator_profile;
+        let current_tier = creator_profile.tier;
+        
+        // Tier promotion logic based on activity and volume
+        // Tier 0: Beginners
+        // Tier 1: Rising (5+ markets, 1000+ volume)
+        // Tier 2: Established (20+ markets, 10,000+ volume)
+        // Tier 3: Expert (50+ markets, 50,000+ volume, high traction)
+        // Tier 4: Elite (100+ markets, 200,000+ volume, very high traction)
+        
+        let new_tier = if creator_profile.markets_created >= 100 && creator_profile.total_volume >= 200_000 && creator_profile.traction_score >= 1000 {
+            4
+        } else if creator_profile.markets_created >= 50 && creator_profile.total_volume >= 50_000 && creator_profile.traction_score >= 500 {
+            3
+        } else if creator_profile.markets_created >= 20 && creator_profile.total_volume >= 10_000 {
+            2
+        } else if creator_profile.markets_created >= 5 && creator_profile.total_volume >= 1_000 {
+            1
+        } else {
+            0
+        };
+        
+        if new_tier != current_tier {
+            creator_profile.tier = new_tier;
+            msg!("Creator tier updated from {} to {}", current_tier, new_tier);
+        } else {
+            msg!("Creator tier remains at {}", current_tier);
+        }
+        
+        Ok(())
+    }
+
+    pub fn update_protocol_stats(ctx: Context<UpdateProtocolStats>) -> Result<()> {
+        let stats = &mut ctx.accounts.protocol_stats;
+        
+        // Update total markets
+        if let Some(markets) = &ctx.accounts.markets {
+            stats.total_markets = stats.total_markets.checked_add(1).unwrap();
+        }
+        
+        // Update total volume if stake occurred
+        if let Some(prediction) = &ctx.accounts.prediction {
+            stats.total_volume = stats.total_volume.checked_add(prediction.amount).unwrap();
+            stats.total_stakes = stats.total_stakes.checked_add(1).unwrap();
+        }
+        
+        // Update total resolved markets if market resolved
+        if let Some(market) = &ctx.accounts.market {
+            if market.resolved && !stats.resolved_markets.contains(&market.key()) {
+                // Keep only the 20 most recent resolved markets
+                if stats.resolved_markets.len() >= 20 {
+                    stats.resolved_markets.remove(0);
+                }
+                stats.resolved_markets.push(market.key());
+            }
+        }
+        
+        stats.last_updated_ts = Clock::get()?.unix_timestamp;
+        msg!("Protocol stats updated");
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -747,6 +982,13 @@ pub struct StakePrediction<'info> {
     )]
     pub market_vault: Account<'info, TokenAccount>,
     
+    #[account(
+        mut,
+        seeds = [b"user_profile", user.key().as_ref()],
+        bump
+    )]
+    pub user_profile: Option<Account<'info, UserProfile>>,
+    
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
@@ -827,6 +1069,20 @@ pub struct ClaimReward<'info> {
         constraint = protocol_fee_account.mint == market_vault.mint
     )]
     pub protocol_fee_account: Account<'info, TokenAccount>,
+    
+    #[account(
+        mut,
+        seeds = [b"user_profile", user.key().as_ref()],
+        bump
+    )]
+    pub user_profile: Option<Account<'info, UserProfile>>,
+    
+    #[account(
+        mut,
+        seeds = [b"creator_profile", market.creator.as_ref()],
+        bump
+    )]
+    pub creator_profile: Option<Account<'info, CreatorProfile>>,
     
     pub token_program: Program<'info, Token>,
 }
@@ -991,6 +1247,71 @@ pub struct ChallengeResolution<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct InitializeUserProfile<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = user,
+        space = 8 + UserProfile::SPACE,
+        seeds = [b"user_profile", user.key().as_ref()],
+        bump
+    )]
+    pub user_profile: Account<'info, UserProfile>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateCreatorTier<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    
+    #[account(mut)]
+    pub creator_profile: Account<'info, CreatorProfile>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeProtocolStats<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + ProtocolStats::SPACE,
+        seeds = [b"protocol_stats"],
+        bump
+    )]
+    pub protocol_stats: Account<'info, ProtocolStats>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateProtocolStats<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    
+    #[account(mut)]
+    pub protocol_stats: Account<'info, ProtocolStats>,
+    
+    #[account(mut)]
+    pub market: Option<Account<'info, Market>>,
+    
+    #[account(mut)]
+    pub prediction: Option<Account<'info, Prediction>>,
+    
+    #[account(mut)]
+    pub markets: Option<Account<'info, Market>>,
+    
+    pub system_program: Program<'info, System>,
+}
+
 #[account]
 #[derive(Default)]
 pub struct Market {
@@ -1109,7 +1430,6 @@ impl AIResolver {
                             30;  // padding
 }
 
-// New structures for enhanced open-ended market resolution
 #[account]
 pub struct VoteResult {
     pub market: Pubkey,
@@ -1139,6 +1459,28 @@ impl VoteResult {
 }
 
 #[account]
+pub struct UserProfile {
+    pub user: Pubkey,
+    pub total_staked: u64,        // Total amount staked across all markets
+    pub total_winnings: u64,      // Total amount won from correct predictions
+    pub total_predictions: u32,   // Total number of predictions made
+    pub winning_predictions: u32, // Number of winning predictions
+    pub last_active_ts: i64,      // Timestamp of last activity
+    pub bump: u8,
+}
+
+impl UserProfile {
+    pub const SPACE: usize = 32 + // user
+                             8 +  // total_staked
+                             8 +  // total_winnings
+                             4 +  // total_predictions
+                             4 +  // winning_predictions
+                             8 +  // last_active_ts
+                             1 +  // bump
+                             30;  // padding
+}
+
+#[account]
 pub struct VoteAuthority {
     pub market: Pubkey,
     pub authority: Pubkey,
@@ -1158,10 +1500,43 @@ impl VoteAuthority {
                              20;  // padding
 }
 
+#[account]
+pub struct ProtocolStats {
+    pub total_volume: u64,        // Total volume across all markets
+    pub total_markets: u32,       // Total number of markets
+    pub total_users: u32,         // Total number of unique users
+    pub total_stakes: u64,        // Total number of stakes made
+    pub resolved_markets: Vec<Pubkey>, // Recently resolved markets
+    pub last_updated_ts: i64,     // Last time stats were updated
+    pub bump: u8,
+}
+
+impl ProtocolStats {
+    pub const SPACE: usize = 8 +  // total_volume
+                             4 +  // total_markets
+                             4 +  // total_users
+                             8 +  // total_stakes
+                             4 + 20 * 32 + // resolved_markets (up to 20 recent markets)
+                             8 +  // last_updated_ts
+                             1 +  // bump
+                             50;  // padding
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum MarketType {
     TimeBound = 0,
     OpenEnded = 1,
+}
+
+// Helper function for tier management
+pub fn get_next_tier_threshold(profile: &CreatorProfile) -> Option<(u64, u32, u64)> {
+    match profile.tier {
+        0 => Some((1_000, 5, 100)),       // Tier 0 -> Tier 1: 1K volume, 5 markets, 100 traction
+        1 => Some((10_000, 20, 300)),     // Tier 1 -> Tier 2: 10K volume, 20 markets, 300 traction
+        2 => Some((50_000, 50, 500)),     // Tier 2 -> Tier 3: 50K volume, 50 markets, 500 traction
+        3 => Some((200_000, 100, 1000)),  // Tier 3 -> Tier 4: 200K volume, 100 markets, 1000 traction
+        _ => None,                        // No higher tier available
+    }
 }
 
 #[error_code]
