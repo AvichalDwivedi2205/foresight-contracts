@@ -40,46 +40,37 @@ pub mod contracts {
         ctx: Context<ResolveMarketViaAI>,
         winning_outcome_index: u8,
         ai_confidence_score: f32,
-        resolution_data: String, // Contains evidence/explanation for the resolution
+        resolution_data: String,
     ) -> Result<()> {
         let market = &mut ctx.accounts.market;
         
-        // Ensure only the authorized AI resolver can call this
         require!(
             ctx.accounts.ai_resolver.authority == ctx.accounts.resolver_authority.key(),
             ErrorCode::Unauthorized
         );
         
-        // Ensure the AI resolver is active
         require!(ctx.accounts.ai_resolver.active, ErrorCode::ResolverInactive);
         
-        // Can't resolve already resolved markets
         require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
         
-        // Check the market deadline has passed
         let current_time = Clock::get()?.unix_timestamp;
         require!(current_time >= market.deadline, ErrorCode::MarketNotExpired);
         
-        // Ensure the resolution has appropriate confidence
         require!(ai_confidence_score >= 0.85, ErrorCode::LowAIConfidence);
         
-        // Ensure AI can only resolve time-bound markets, not open-ended markets
         require!(
             market.market_type == MarketType::TimeBound as u8,
             ErrorCode::NotTimeBoundMarket
         );
         
-        // Validate outcome index
         require!(
             (winning_outcome_index as usize) < market.outcomes.len(),
             ErrorCode::InvalidOutcomeIndex
         );
-        
-        // Update the market state
+
         market.winning_outcome = Some(winning_outcome_index);
         market.resolved = true;
         
-        // Update resolution counter
         ctx.accounts.ai_resolver.resolution_count = ctx.accounts.ai_resolver.resolution_count.checked_add(1).unwrap();
         
         msg!("Market resolved by AI with outcome: {}, confidence: {}", winning_outcome_index, ai_confidence_score);
@@ -97,7 +88,7 @@ pub mod contracts {
         ai_classification: u8,
         creator_metadata: String,
         creator_fee_bps: Option<u16>,
-        ai_resolvable: Option<bool>, // New parameter for AI resolvable markets
+        ai_resolvable: Option<bool>, 
     ) -> Result<()> {
         require!(outcomes.len() <= 5, ErrorCode::TooManyOutcomes);
         require!(ai_score >= 0.7, ErrorCode::LowAIScore);
@@ -126,7 +117,7 @@ pub mod contracts {
         
         let fee_bps = match creator_fee_bps {
             Some(fee) => {
-                require!(fee <= 500, ErrorCode::ExcessiveCreatorFee); // Max 5%
+                require!(fee <= 500, ErrorCode::ExcessiveCreatorFee); 
                 fee
             },
             None => 200, // Default 2%
@@ -145,16 +136,14 @@ pub mod contracts {
         market.winning_outcome = None;
         market.total_pool = 0;
         market.creator_fee_bps = fee_bps;
-        market.protocol_fee_bps = 50; // Default 0.5% protocol fee
-        market.stakes_per_outcome = vec![0; market.outcomes.len()]; // Initialize stakes per outcome
-        market.ai_resolvable = ai_resolvable.unwrap_or(true); // Default to AI resolvable unless specified
+        market.protocol_fee_bps = 50; 
+        market.stakes_per_outcome = vec![0; market.outcomes.len()]; 
+        market.ai_resolvable = ai_resolvable.unwrap_or(true); 
         market.bump = ctx.bumps.market;
         
-        // Update creator profile
         creator_profile.last_created_at = clock.unix_timestamp;
         creator_profile.markets_created = creator_profile.markets_created.checked_add(1).unwrap();
-        
-        // Log creator metadata for off-chain indexing and AI purposes
+
         msg!("Market initialized: {} (metadata: {})", question, creator_metadata);
         Ok(())
     }
@@ -164,21 +153,17 @@ pub mod contracts {
         outcome_index: u8,
         amount: u64,
     ) -> Result<()> {
-        // Validate outcome index
         let market = &mut ctx.accounts.market;
         require!(
             (outcome_index as usize) < market.outcomes.len(),
             ErrorCode::InvalidOutcomeIndex
         );
         
-        // Can't stake on resolved markets
         require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
         
-        // Check that the deadline hasn't passed
         let current_time = Clock::get()?.unix_timestamp;
         require!(market.deadline > current_time, ErrorCode::MarketExpired);
-        
-        // Transfer tokens from user to market vault
+
         let cpi_accounts = Transfer {
             from: ctx.accounts.user_token_account.to_account_info(),
             to: ctx.accounts.market_vault.to_account_info(),
@@ -409,15 +394,11 @@ pub mod contracts {
     }
 
     pub fn close_market(ctx: Context<CloseMarket>) -> Result<()> {
-        // Only admin can close markets
-        // This check is redundant as the market will only close if admin is the signer
         
         let market = &ctx.accounts.market;
         
-        // Can only close resolved markets
         require!(market.resolved, ErrorCode::MarketNotResolved);
         
-        // Market is already closed by Anchor's account close constraint
         msg!("Market closed");
         Ok(())
     }
@@ -426,13 +407,10 @@ pub mod contracts {
         ctx: Context<RegisterVoteAuthority>,
         weight: u8,
     ) -> Result<()> {
-        // Only admin can register vote authorities
-        let admin_key = ctx.accounts.admin.key();
+        let _admin_key = ctx.accounts.admin.key();
         
-        // Weight must be between 1 and 5
         require!(weight >= 1 && weight <= 5, ErrorCode::InvalidWeight);
         
-        // Ensure market is open-ended
         require!(
             ctx.accounts.market.market_type == MarketType::OpenEnded as u8,
             ErrorCode::NotOpenEndedMarket
@@ -456,20 +434,17 @@ pub mod contracts {
     ) -> Result<()> {
         let market = &ctx.accounts.market;
         
-        // Only for open-ended markets
         require!(
             market.market_type == MarketType::OpenEnded as u8,
             ErrorCode::NotOpenEndedMarket
         );
         
-        // Market deadline must have passed
         let clock = Clock::get()?;
         require!(
             clock.unix_timestamp >= market.deadline,
             ErrorCode::VotingNotStarted
         );
         
-        // Initialize vote results with zeros
         let vote_result = &mut ctx.accounts.vote_result;
         vote_result.market = market.key();
         vote_result.vote_tallies = vec![0; market.outcomes.len()];
@@ -495,7 +470,6 @@ pub mod contracts {
         let prediction = &ctx.accounts.prediction;
         let vote_result = &mut ctx.accounts.vote_result;
         
-        // Validations
         require!(
             market.market_type == MarketType::OpenEnded as u8,
             ErrorCode::NotOpenEndedMarket
@@ -503,7 +477,6 @@ pub mod contracts {
         
         require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
         
-        // Check that voter has a prediction with stake
         require!(
             prediction.user == voter.key(),
             ErrorCode::Unauthorized
@@ -532,22 +505,18 @@ pub mod contracts {
             ErrorCode::InvalidOutcomeIndex
         );
         
-        // Record vote with stake weight
         let vote = &mut ctx.accounts.outcome_vote;
         vote.market = market.key();
         vote.voter = voter.key();
         vote.outcome_index = outcome_index;
         vote.bump = ctx.bumps.outcome_vote;
         
-        // Update vote tallies
         vote_result.vote_tallies[outcome_index as usize] = 
             vote_result.vote_tallies[outcome_index as usize].checked_add(1).unwrap();
         
-        // Update stake weights
         vote_result.stake_weights[outcome_index as usize] = 
             vote_result.stake_weights[outcome_index as usize].checked_add(prediction.amount).unwrap();
         
-        // Update vote count
         vote_result.vote_count = vote_result.vote_count.checked_add(1).unwrap();
         
         msg!("Stake-weighted vote recorded for outcome {} with weight {}", outcome_index, prediction.amount);
@@ -562,7 +531,6 @@ pub mod contracts {
         let vote_result = &mut ctx.accounts.vote_result;
         let authority = &mut ctx.accounts.vote_authority;
         
-        // Validations
         require!(
             market.market_type == MarketType::OpenEnded as u8,
             ErrorCode::NotOpenEndedMarket
@@ -570,7 +538,6 @@ pub mod contracts {
         
         require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
         
-        // Check that vote deadline has passed
         let clock = Clock::get()?;
         let voting_deadline = market.deadline.checked_add(15 * 24 * 60 * 60).unwrap(); // 15 days
         
@@ -579,17 +546,14 @@ pub mod contracts {
             ErrorCode::VotingNotEnded
         );
         
-        // Validate outcome
         require!(
             (outcome_index as usize) < market.outcomes.len(),
             ErrorCode::InvalidOutcomeIndex
         );
         
-        // Record authority vote
         authority.has_voted = true;
         authority.vote = Some(outcome_index);
         
-        // If this is the first proposal, set the proposed outcome
         if !vote_result.resolution_proposed {
             vote_result.resolution_proposed = true;
             vote_result.proposed_outcome = Some(outcome_index);
@@ -597,11 +561,9 @@ pub mod contracts {
             
             msg!("Resolution proposed with outcome {}", outcome_index);
         } else {
-            // If there's already a proposal, check if this is a new proposal or a confirmation
             if vote_result.proposed_outcome == Some(outcome_index) {
                 msg!("Resolution proposal confirmed for outcome {}", outcome_index);
             } else {
-                // This is a challenge
                 vote_result.challenge_count = vote_result.challenge_count.checked_add(1).unwrap();
                 msg!("Resolution challenged with alternative outcome {}", outcome_index);
             }
@@ -616,7 +578,6 @@ pub mod contracts {
         let market = &mut ctx.accounts.market;
         let vote_result = &mut ctx.accounts.vote_result;
         
-        // Validations
         require!(
             market.market_type == MarketType::OpenEnded as u8,
             ErrorCode::NotOpenEndedMarket
@@ -625,7 +586,6 @@ pub mod contracts {
         require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
         require!(vote_result.resolution_proposed, ErrorCode::NoProposedResolution);
         
-        // Check that challenge period has passed (48 hours)
         let clock = Clock::get()?;
         let challenge_deadline = vote_result.proposal_time.checked_add(48 * 60 * 60).unwrap(); // 48 hours
         
@@ -634,9 +594,7 @@ pub mod contracts {
             ErrorCode::ChallengePeriodActive
         );
         
-        // If there are challenges, use stake-weighted outcome
         if vote_result.challenge_count > 0 {
-            // Find outcome with highest stake weight
             let mut max_stake = 0;
             let mut winning_index = 0;
             
@@ -651,7 +609,6 @@ pub mod contracts {
             msg!("Resolution determined by stake-weighted vote: outcome {}", winning_index);
         }
         
-        // Finalize the result
         market.winning_outcome = vote_result.proposed_outcome;
         market.resolved = true;
         vote_result.finalized = true;
@@ -666,11 +623,9 @@ pub mod contracts {
     ) -> Result<()> {
         let vote_result = &mut ctx.accounts.vote_result;
         
-        // Validations
         require!(vote_result.resolution_proposed, ErrorCode::NoProposedResolution);
         require!(!vote_result.finalized, ErrorCode::ResolutionFinalized);
         
-        // Check that challenge is within the challenge period (48 hours)
         let clock = Clock::get()?;
         let challenge_deadline = vote_result.proposal_time.checked_add(48 * 60 * 60).unwrap(); // 48 hours
         
