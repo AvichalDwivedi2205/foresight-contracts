@@ -12,35 +12,99 @@ pub mod contracts {
         let creator = ctx.accounts.creator.key();
 
         profile.creator = creator;
-        profile.last_created_at = 0; // Initialize with 0 to allow first market creation
+        profile.last_created_at = 0;
         profile.markets_created = 0;
         profile.total_volume = 0;
         profile.traction_score = 0;
-        profile.tier = 0; // Start at tier 0
+        profile.tier = 0;
         profile.bump = ctx.bumps.creator_profile;
 
         msg!("Creator profile created for {}", creator);
         Ok(())
     }
 
-    pub fn initialize_market(
+    pub fn initialize_ai_resolver(
+        ctx: Context<InitializeAIResolver>,
+    ) -> Result<()> {
+        let resolver = &mut ctx.accounts.ai_resolver;
+        resolver.authority = ctx.accounts.admin.key();
+        resolver.active = true;
+        resolver.resolution_count = 0;
+        resolver.bump = ctx.bumps.ai_resolver;
+        
+        msg!("AI resolver initialized with authority: {}", resolver.authority);
+        Ok(())
+    }
+
+    pub fn resolve_market_via_ai(
+        ctx: Context<ResolveMarketViaAI>,
+        winning_outcome_index: u8,
+        ai_confidence_score: f32,
+        resolution_data: String, // Contains evidence/explanation for the resolution
+    ) -> Result<()> {
+        let market = &mut ctx.accounts.market;
+        
+        // Ensure only the authorized AI resolver can call this
+        require!(
+            ctx.accounts.ai_resolver.authority == ctx.accounts.resolver_authority.key(),
+            ErrorCode::Unauthorized
+        );
+        
+        // Ensure the AI resolver is active
+        require!(ctx.accounts.ai_resolver.active, ErrorCode::ResolverInactive);
+        
+        // Can't resolve already resolved markets
+        require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
+        
+        // Check the market deadline has passed
+        let current_time = Clock::get()?.unix_timestamp;
+        require!(current_time >= market.deadline, ErrorCode::MarketNotExpired);
+        
+        // Ensure the resolution has appropriate confidence
+        require!(ai_confidence_score >= 0.85, ErrorCode::LowAIConfidence);
+        
+        // Ensure AI can only resolve time-bound markets, not open-ended markets
+        require!(
+            market.market_type == MarketType::TimeBound as u8,
+            ErrorCode::NotTimeBoundMarket
+        );
+        
+        // Validate outcome index
+        require!(
+            (winning_outcome_index as usize) < market.outcomes.len(),
+            ErrorCode::InvalidOutcomeIndex
+        );
+        
+        // Update the market state
+        market.winning_outcome = Some(winning_outcome_index);
+        market.resolved = true;
+        
+        // Update resolution counter
+        ctx.accounts.ai_resolver.resolution_count = ctx.accounts.ai_resolver.resolution_count.checked_add(1).unwrap();
+        
+        msg!("Market resolved by AI with outcome: {}, confidence: {}", winning_outcome_index, ai_confidence_score);
+        msg!("Resolution data: {}", resolution_data);
+        
+        Ok(())
+    }
+
+    pub fn create_market(
         ctx: Context<InitializeMarket>,
         question: String,
         outcomes: Vec<String>,
         ai_score: f32,
         ai_recommended_resolution_time: i64,
         ai_classification: u8,
-        creator_metadata: String, // Stored off-chain but kept as parameter for consistency
+        creator_metadata: String,
         creator_fee_bps: Option<u16>,
+        ai_resolvable: Option<bool>, // New parameter for AI resolvable markets
     ) -> Result<()> {
-        // Validate inputs
         require!(outcomes.len() <= 5, ErrorCode::TooManyOutcomes);
         require!(ai_score >= 0.7, ErrorCode::LowAIScore);
         
-        // Validate market type
         match ai_classification {
-            0 => {}, // TimeBound
-            1 => {}, // OpenEnded
+            0 => {}, 
+            1 => {}, 
             _ => return Err(ErrorCode::InvalidMarketType.into()),
         };
         
@@ -50,7 +114,6 @@ pub mod contracts {
             ErrorCode::InvalidDeadline
         );
 
-        // Check creator cooldown (5 days for Tier 0)
         let creator_profile = &mut ctx.accounts.creator_profile;
         let five_days_in_seconds = 5 * 24 * 60 * 60;
         
@@ -61,7 +124,6 @@ pub mod contracts {
             );
         }
         
-        // Apply creator fee (with cap)
         let fee_bps = match creator_fee_bps {
             Some(fee) => {
                 require!(fee <= 500, ErrorCode::ExcessiveCreatorFee); // Max 5%
@@ -73,7 +135,7 @@ pub mod contracts {
         // Initialize market account
         let market = &mut ctx.accounts.market;
         market.creator = ctx.accounts.creator.key();
-        market.question = question.clone(); // Clone to avoid move error
+        market.question = question.clone();
         market.outcomes = outcomes;
         market.ai_score = ai_score;
         market.market_type = ai_classification;
@@ -85,6 +147,7 @@ pub mod contracts {
         market.creator_fee_bps = fee_bps;
         market.protocol_fee_bps = 50; // Default 0.5% protocol fee
         market.stakes_per_outcome = vec![0; market.outcomes.len()]; // Initialize stakes per outcome
+        market.ai_resolvable = ai_resolvable.unwrap_or(true); // Default to AI resolvable unless specified
         market.bump = ctx.bumps.market;
         
         // Update creator profile
@@ -224,8 +287,6 @@ pub mod contracts {
             
             market.winning_outcome = winning_outcome_index;
         } else {
-            // For OpenEnded markets, admin can provide the winning outcome based on off-chain vote calculation
-            // (In a real implementation, you might want to verify this against on-chain votes)
             market.winning_outcome = winning_outcome_index;
         }
         
@@ -360,6 +421,270 @@ pub mod contracts {
         msg!("Market closed");
         Ok(())
     }
+
+    pub fn register_vote_authority(
+        ctx: Context<RegisterVoteAuthority>,
+        weight: u8,
+    ) -> Result<()> {
+        // Only admin can register vote authorities
+        let admin_key = ctx.accounts.admin.key();
+        
+        // Weight must be between 1 and 5
+        require!(weight >= 1 && weight <= 5, ErrorCode::InvalidWeight);
+        
+        // Ensure market is open-ended
+        require!(
+            ctx.accounts.market.market_type == MarketType::OpenEnded as u8,
+            ErrorCode::NotOpenEndedMarket
+        );
+        
+        // Initialize vote authority
+        let authority = &mut ctx.accounts.vote_authority;
+        authority.market = ctx.accounts.market.key();
+        authority.authority = ctx.accounts.authority.key();
+        authority.weight = weight;
+        authority.has_voted = false;
+        authority.vote = None;
+        authority.bump = ctx.bumps.vote_authority;
+        
+        msg!("Vote authority registered with weight {}", weight);
+        Ok(())
+    }
+
+    pub fn initialize_vote_result(
+        ctx: Context<InitializeVoteResult>,
+    ) -> Result<()> {
+        let market = &ctx.accounts.market;
+        
+        // Only for open-ended markets
+        require!(
+            market.market_type == MarketType::OpenEnded as u8,
+            ErrorCode::NotOpenEndedMarket
+        );
+        
+        // Market deadline must have passed
+        let clock = Clock::get()?;
+        require!(
+            clock.unix_timestamp >= market.deadline,
+            ErrorCode::VotingNotStarted
+        );
+        
+        // Initialize vote results with zeros
+        let vote_result = &mut ctx.accounts.vote_result;
+        vote_result.market = market.key();
+        vote_result.vote_tallies = vec![0; market.outcomes.len()];
+        vote_result.stake_weights = vec![0; market.outcomes.len()];
+        vote_result.vote_count = 0;
+        vote_result.resolution_proposed = false;
+        vote_result.proposed_outcome = None;
+        vote_result.proposal_time = 0;
+        vote_result.challenge_count = 0;
+        vote_result.finalized = false;
+        vote_result.bump = ctx.bumps.vote_result;
+        
+        msg!("Vote result initialized for market {}", market.key());
+        Ok(())
+    }
+
+    pub fn stake_weighted_vote(
+        ctx: Context<StakeWeightedVote>,
+        outcome_index: u8,
+    ) -> Result<()> {
+        let market = &ctx.accounts.market;
+        let voter = &ctx.accounts.voter;
+        let prediction = &ctx.accounts.prediction;
+        let vote_result = &mut ctx.accounts.vote_result;
+        
+        // Validations
+        require!(
+            market.market_type == MarketType::OpenEnded as u8,
+            ErrorCode::NotOpenEndedMarket
+        );
+        
+        require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
+        
+        // Check that voter has a prediction with stake
+        require!(
+            prediction.user == voter.key(),
+            ErrorCode::Unauthorized
+        );
+        
+        require!(
+            prediction.amount > 0,
+            ErrorCode::InsufficientStake
+        );
+        
+        let clock = Clock::get()?;
+        let voting_deadline = market.deadline.checked_add(15 * 24 * 60 * 60).unwrap(); // 15 days after deadline
+        
+        require!(
+            clock.unix_timestamp >= market.deadline,
+            ErrorCode::VotingNotStarted
+        );
+        
+        require!(
+            clock.unix_timestamp <= voting_deadline,
+            ErrorCode::VotingPeriodEnded
+        );
+        
+        require!(
+            (outcome_index as usize) < market.outcomes.len(),
+            ErrorCode::InvalidOutcomeIndex
+        );
+        
+        // Record vote with stake weight
+        let vote = &mut ctx.accounts.outcome_vote;
+        vote.market = market.key();
+        vote.voter = voter.key();
+        vote.outcome_index = outcome_index;
+        vote.bump = ctx.bumps.outcome_vote;
+        
+        // Update vote tallies
+        vote_result.vote_tallies[outcome_index as usize] = 
+            vote_result.vote_tallies[outcome_index as usize].checked_add(1).unwrap();
+        
+        // Update stake weights
+        vote_result.stake_weights[outcome_index as usize] = 
+            vote_result.stake_weights[outcome_index as usize].checked_add(prediction.amount).unwrap();
+        
+        // Update vote count
+        vote_result.vote_count = vote_result.vote_count.checked_add(1).unwrap();
+        
+        msg!("Stake-weighted vote recorded for outcome {} with weight {}", outcome_index, prediction.amount);
+        Ok(())
+    }
+
+    pub fn propose_resolution(
+        ctx: Context<ProposeResolution>,
+        outcome_index: u8,
+    ) -> Result<()> {
+        let market = &ctx.accounts.market;
+        let vote_result = &mut ctx.accounts.vote_result;
+        let authority = &mut ctx.accounts.vote_authority;
+        
+        // Validations
+        require!(
+            market.market_type == MarketType::OpenEnded as u8,
+            ErrorCode::NotOpenEndedMarket
+        );
+        
+        require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
+        
+        // Check that vote deadline has passed
+        let clock = Clock::get()?;
+        let voting_deadline = market.deadline.checked_add(15 * 24 * 60 * 60).unwrap(); // 15 days
+        
+        require!(
+            clock.unix_timestamp > voting_deadline,
+            ErrorCode::VotingNotEnded
+        );
+        
+        // Validate outcome
+        require!(
+            (outcome_index as usize) < market.outcomes.len(),
+            ErrorCode::InvalidOutcomeIndex
+        );
+        
+        // Record authority vote
+        authority.has_voted = true;
+        authority.vote = Some(outcome_index);
+        
+        // If this is the first proposal, set the proposed outcome
+        if !vote_result.resolution_proposed {
+            vote_result.resolution_proposed = true;
+            vote_result.proposed_outcome = Some(outcome_index);
+            vote_result.proposal_time = clock.unix_timestamp;
+            
+            msg!("Resolution proposed with outcome {}", outcome_index);
+        } else {
+            // If there's already a proposal, check if this is a new proposal or a confirmation
+            if vote_result.proposed_outcome == Some(outcome_index) {
+                msg!("Resolution proposal confirmed for outcome {}", outcome_index);
+            } else {
+                // This is a challenge
+                vote_result.challenge_count = vote_result.challenge_count.checked_add(1).unwrap();
+                msg!("Resolution challenged with alternative outcome {}", outcome_index);
+            }
+        }
+        
+        Ok(())
+    }
+
+    pub fn finalize_resolution(
+        ctx: Context<FinalizeResolution>,
+    ) -> Result<()> {
+        let market = &mut ctx.accounts.market;
+        let vote_result = &mut ctx.accounts.vote_result;
+        
+        // Validations
+        require!(
+            market.market_type == MarketType::OpenEnded as u8,
+            ErrorCode::NotOpenEndedMarket
+        );
+        
+        require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
+        require!(vote_result.resolution_proposed, ErrorCode::NoProposedResolution);
+        
+        // Check that challenge period has passed (48 hours)
+        let clock = Clock::get()?;
+        let challenge_deadline = vote_result.proposal_time.checked_add(48 * 60 * 60).unwrap(); // 48 hours
+        
+        require!(
+            clock.unix_timestamp > challenge_deadline,
+            ErrorCode::ChallengePeriodActive
+        );
+        
+        // If there are challenges, use stake-weighted outcome
+        if vote_result.challenge_count > 0 {
+            // Find outcome with highest stake weight
+            let mut max_stake = 0;
+            let mut winning_index = 0;
+            
+            for (i, &stake) in vote_result.stake_weights.iter().enumerate() {
+                if stake > max_stake {
+                    max_stake = stake;
+                    winning_index = i;
+                }
+            }
+            
+            vote_result.proposed_outcome = Some(winning_index as u8);
+            msg!("Resolution determined by stake-weighted vote: outcome {}", winning_index);
+        }
+        
+        // Finalize the result
+        market.winning_outcome = vote_result.proposed_outcome;
+        market.resolved = true;
+        vote_result.finalized = true;
+        
+        msg!("Market resolution finalized with outcome {:?}", market.winning_outcome);
+        Ok(())
+    }
+
+    pub fn challenge_resolution(
+        ctx: Context<ChallengeResolution>,
+        evidence: String,
+    ) -> Result<()> {
+        let vote_result = &mut ctx.accounts.vote_result;
+        
+        // Validations
+        require!(vote_result.resolution_proposed, ErrorCode::NoProposedResolution);
+        require!(!vote_result.finalized, ErrorCode::ResolutionFinalized);
+        
+        // Check that challenge is within the challenge period (48 hours)
+        let clock = Clock::get()?;
+        let challenge_deadline = vote_result.proposal_time.checked_add(48 * 60 * 60).unwrap(); // 48 hours
+        
+        require!(
+            clock.unix_timestamp <= challenge_deadline,
+            ErrorCode::ChallengePeriodEnded
+        );
+        
+        // Register challenge
+        vote_result.challenge_count = vote_result.challenge_count.checked_add(1).unwrap();
+        
+        msg!("Resolution challenged with evidence: {}", evidence);
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -375,6 +700,41 @@ pub struct CreateCreatorProfile<'info> {
         bump
     )]
     pub creator_profile: Account<'info, CreatorProfile>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeAIResolver<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + AIResolver::SPACE,
+        seeds = [b"ai_resolver", admin.key().as_ref()],
+        bump
+    )]
+    pub ai_resolver: Account<'info, AIResolver>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ResolveMarketViaAI<'info> {
+    #[account(mut)]
+    pub resolver_authority: Signer<'info>,
+    
+    #[account(mut)]
+    pub market: Account<'info, Market>,
+    
+    #[account(
+        mut,
+        seeds = [b"ai_resolver", resolver_authority.key().as_ref()],
+        bump
+    )]
+    pub ai_resolver: Account<'info, AIResolver>,
     
     pub system_program: Program<'info, System>,
 }
@@ -563,6 +923,144 @@ pub struct CloseMarket<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+#[derive(Accounts)]
+pub struct RegisterVoteAuthority<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>, // Protocol admin
+    
+    #[account(mut)]
+    pub market: Account<'info, Market>,
+    
+    /// The account that will be granted voting authority
+    pub authority: SystemAccount<'info>,
+    
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + VoteAuthority::SPACE,
+        seeds = [b"vote_authority", market.key().as_ref(), authority.key().as_ref()],
+        bump
+    )]
+    pub vote_authority: Account<'info, VoteAuthority>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeVoteResult<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>, // Protocol admin
+    
+    #[account(mut)]
+    pub market: Account<'info, Market>,
+    
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + VoteResult::SPACE,
+        seeds = [b"vote_result", market.key().as_ref()],
+        bump
+    )]
+    pub vote_result: Account<'info, VoteResult>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct StakeWeightedVote<'info> {
+    #[account(mut)]
+    pub voter: Signer<'info>,
+    
+    #[account(mut)]
+    pub market: Account<'info, Market>,
+    
+    #[account(
+        mut,
+        seeds = [b"prediction", market.key().as_ref(), voter.key().as_ref()],
+        bump
+    )]
+    pub prediction: Account<'info, Prediction>,
+    
+    #[account(
+        mut,
+        seeds = [b"vote_result", market.key().as_ref()],
+        bump
+    )]
+    pub vote_result: Account<'info, VoteResult>,
+    
+    #[account(
+        init,
+        payer = voter,
+        space = 8 + OutcomeVote::SPACE,
+        seeds = [b"outcome_vote", market.key().as_ref(), voter.key().as_ref()],
+        bump
+    )]
+    pub outcome_vote: Account<'info, OutcomeVote>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ProposeResolution<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    
+    #[account(mut)]
+    pub market: Account<'info, Market>,
+    
+    #[account(
+        mut,
+        seeds = [b"vote_result", market.key().as_ref()],
+        bump
+    )]
+    pub vote_result: Account<'info, VoteResult>,
+    
+    #[account(
+        mut,
+        seeds = [b"vote_authority", market.key().as_ref(), authority.key().as_ref()],
+        bump
+    )]
+    pub vote_authority: Account<'info, VoteAuthority>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct FinalizeResolution<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>, // Protocol admin
+    
+    #[account(mut)]
+    pub market: Account<'info, Market>,
+    
+    #[account(
+        mut,
+        seeds = [b"vote_result", market.key().as_ref()],
+        bump
+    )]
+    pub vote_result: Account<'info, VoteResult>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ChallengeResolution<'info> {
+    #[account(mut)]
+    pub challenger: Signer<'info>,
+    
+    #[account(mut)]
+    pub market: Account<'info, Market>,
+    
+    #[account(
+        mut,
+        seeds = [b"vote_result", market.key().as_ref()],
+        bump
+    )]
+    pub vote_result: Account<'info, VoteResult>,
+    
+    pub system_program: Program<'info, System>,
+}
+
 #[account]
 #[derive(Default)]
 pub struct Market {
@@ -579,6 +1077,7 @@ pub struct Market {
     pub creator_fee_bps: u16,
     pub protocol_fee_bps: u16,
     pub stakes_per_outcome: Vec<u64>, // Track stakes per outcome for fair distribution
+    pub ai_resolvable: bool, // Flag indicating if this market can be resolved by AI
     pub bump: u8,
 }
 
@@ -596,6 +1095,7 @@ impl Market {
                             2 + // creator_fee_bps
                             2 + // protocol_fee_bps
                             4 + 5 * 8 + // stakes_per_outcome (5 outcomes max)
+                            1 + // ai_resolvable
                             1 + // bump
                             50; // padding
 }
@@ -663,6 +1163,77 @@ impl CreatorProfile {
                             30; // padding
 }
 
+#[account]
+pub struct AIResolver {
+    pub authority: Pubkey,       // The authorized AI service public key
+    pub active: bool,            // Whether this resolver is active
+    pub resolution_count: u64,   // Number of markets resolved
+    pub bump: u8,
+}
+
+impl AIResolver {
+    pub const SPACE: usize = 32 + // authority
+                            1 +  // active
+                            8 +  // resolution_count
+                            1 +  // bump
+                            30;  // padding
+}
+
+// New structures for enhanced open-ended market resolution
+#[account]
+pub struct VoteResult {
+    pub market: Pubkey,
+    pub vote_tallies: Vec<u64>,    // Number of votes per outcome
+    pub stake_weights: Vec<u64>,   // Stake-weighted votes per outcome
+    pub vote_count: u64,           // Total number of votes
+    pub resolution_proposed: bool, // Whether a resolution has been proposed
+    pub proposed_outcome: Option<u8>, // Proposed winning outcome
+    pub proposal_time: i64,        // When the resolution was proposed
+    pub challenge_count: u8,       // Number of challenges to the proposal
+    pub finalized: bool,           // Whether voting is finalized
+    pub bump: u8,
+}
+
+impl VoteResult {
+    pub const SPACE: usize = 32 +  // market
+                             4 + 5 * 8 + // vote_tallies (5 outcomes max)
+                             4 + 5 * 8 + // stake_weights (5 outcomes max)
+                             8 +  // vote_count
+                             1 +  // resolution_proposed
+                             1 + 1 + // proposed_outcome (Option<u8>)
+                             8 +  // proposal_time
+                             1 +  // challenge_count
+                             1 +  // finalized
+                             1 +  // bump
+                             40;  // padding
+}
+
+#[account]
+pub struct VoteAuthority {
+    pub market: Pubkey,
+    pub authority: Pubkey,
+    pub weight: u8,         // Authority weight for multi-sig (1-5)
+    pub has_voted: bool,    // Whether this authority has voted
+    pub vote: Option<u8>,   // The outcome this authority voted for
+    pub bump: u8,
+}
+
+impl VoteAuthority {
+    pub const SPACE: usize = 32 + // market
+                             32 + // authority
+                             1 +  // weight
+                             1 +  // has_voted
+                             1 + 1 + // vote (Option<u8>)
+                             1 +  // bump
+                             20;  // padding
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum MarketType {
+    TimeBound = 0,
+    OpenEnded = 1,
+}
+
 #[error_code]
 pub enum ErrorCode {
     #[msg("Too many outcomes. Maximum is 5.")]
@@ -724,9 +1295,37 @@ pub enum ErrorCode {
     
     #[msg("Market has expired. The deadline has passed.")]
     MarketExpired,
-}
-#[derive(Clone, Copy, PartialEq)]
-pub enum MarketType {
-    TimeBound = 0,
-    OpenEnded = 1,
+    
+    #[msg("AI confidence score too low for resolution.")]
+    LowAIConfidence,
+    
+    #[msg("AI resolver is inactive.")]
+    ResolverInactive,
+    
+    #[msg("Market has not yet reached its deadline.")]
+    MarketNotExpired,
+    
+    #[msg("AI resolver can only resolve time-bound markets.")]
+    NotTimeBoundMarket,
+    
+    #[msg("Invalid weight for vote authority. Must be between 1 and 5.")]
+    InvalidWeight,
+    
+    #[msg("Insufficient stake for voting.")]
+    InsufficientStake,
+    
+    #[msg("Voting has not ended yet.")]
+    VotingNotEnded,
+    
+    #[msg("No proposed resolution exists.")]
+    NoProposedResolution,
+    
+    #[msg("Challenge period is still active.")]
+    ChallengePeriodActive,
+    
+    #[msg("Challenge period has ended.")]
+    ChallengePeriodEnded,
+    
+    #[msg("Resolution has already been finalized.")]
+    ResolutionFinalized,
 }
