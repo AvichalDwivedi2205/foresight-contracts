@@ -153,6 +153,8 @@ async function testForesightProtocol() {
     const aiClassification = 1; // Arbitrary category
     const creatorMetadata = "Test market created via comprehensive test";
     
+    // No creator_fee_bps parameter as fees are now tier-based
+    // Creator is at tier 0 initially, so fee should be 1.5% (150 basis points)
     const txCreateMarket = await client.createMarket(
       creator,
       mint,
@@ -162,7 +164,7 @@ async function testForesightProtocol() {
       resolutionTime,
       aiClassification,
       creatorMetadata,
-      500, // 5% creator fee (in basis points)
+      undefined, // fee is now determined by tier
       true // AI resolvable
     );
     console.log("✅ Market created, transaction signature:", txCreateMarket);
@@ -184,7 +186,8 @@ async function testForesightProtocol() {
       question: marketData.question,
       outcomes: marketData.outcomes,
       creator: marketData.creator.toString(),
-      totalPool: marketData.totalPool.toString()
+      totalPool: marketData.totalPool.toString(),
+      creatorFeeBps: marketData.creatorFeeBps.toString() // Should show 150 (1.5%) for tier 0
     });
     
     // 6. Create User Profiles

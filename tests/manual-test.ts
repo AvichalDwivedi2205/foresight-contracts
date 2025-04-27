@@ -76,6 +76,7 @@ async function testForesightProtocol() {
     const aiClassification = 1; // Arbitrary category
     const creatorMetadata = "Test market by Foresight Protocol";
     
+    // Using tier-based fee system instead of creator-specified fee
     const txCreateMarket = await client.createMarket(
       creator,
       mint,
@@ -85,7 +86,7 @@ async function testForesightProtocol() {
       aiRecommendedResolutionTime,
       aiClassification,
       creatorMetadata,
-      500, // 5% creator fee (in basis points)
+      undefined, // Fee is now determined by creator's tier (Tier 0 = 1.5%)
       true // AI resolvable
     );
     console.log("Market created, transaction signature:", txCreateMarket);
@@ -106,7 +107,8 @@ async function testForesightProtocol() {
     console.log("Market data:", {
       question: marketData.question,
       outcomes: marketData.outcomes,
-      creator: marketData.creator.toString()
+      creator: marketData.creator.toString(),
+      creatorFeeBps: marketData.creatorFeeBps.toString() // Should be 150 (1.5%) for tier 0
     });
     
     console.log("\n🎉 All tests completed successfully!");

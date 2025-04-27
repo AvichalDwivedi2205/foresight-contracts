@@ -126,7 +126,7 @@ pub mod contracts {
         ai_recommended_resolution_time: i64,
         ai_classification: u8,
         creator_metadata: String,
-        creator_fee_bps: Option<u16>,
+        creator_fee_bps: Option<u16>,  // This parameter is kept for backward compatibility
         ai_resolvable: Option<bool>, 
     ) -> Result<()> {
         require!(outcomes.len() <= 5, ErrorCode::TooManyOutcomes);
@@ -154,13 +154,8 @@ pub mod contracts {
             );
         }
         
-        let fee_bps = match creator_fee_bps {
-            Some(fee) => {
-                require!(fee <= 500, ErrorCode::ExcessiveCreatorFee); 
-                fee
-            },
-            None => 200, // Default 2%
-        };
+        // Set fee based on creator tier instead of user-specified fee
+        let fee_bps = get_creator_fee_bps(creator_profile.tier);
         
         // Initialize market account
         let market = &mut ctx.accounts.market;
@@ -193,6 +188,7 @@ pub mod contracts {
         });
 
         msg!("Market initialized: {} (metadata: {})", question, creator_metadata);
+        msg!("Creator tier: {}, fee: {}bps", creator_profile.tier, fee_bps);
         Ok(())
     }
 
@@ -796,13 +792,16 @@ pub mod contracts {
         let current_tier = creator_profile.tier;
         
         // Tier promotion logic based on activity and volume
-        // Tier 0: Beginners
-        // Tier 1: Rising (5+ markets, 1000+ volume)
-        // Tier 2: Established (20+ markets, 10,000+ volume)
-        // Tier 3: Expert (50+ markets, 50,000+ volume, high traction)
-        // Tier 4: Elite (100+ markets, 200,000+ volume, very high traction)
+        // Tier 0: Beginners (1.5% fee)
+        // Tier 1: Rising (5+ markets, 1000+ volume) (1.75% fee)
+        // Tier 2: Established (20+ markets, 10,000+ volume) (2% fee)
+        // Tier 3: Expert (50+ markets, 50,000+ volume, high traction) (3% fee)
+        // Tier 4: Elite (100+ markets, 200,000+ volume, very high traction) (4% fee)
+        // Tier 5: Master (200+ markets, 500,000+ volume, exceptional traction) (5% fee)
         
-        let new_tier = if creator_profile.markets_created >= 100 && creator_profile.total_volume >= 200_000 && creator_profile.traction_score >= 1000 {
+        let new_tier = if creator_profile.markets_created >= 200 && creator_profile.total_volume >= 500_000 && creator_profile.traction_score >= 2000 {
+            5
+        } else if creator_profile.markets_created >= 100 && creator_profile.total_volume >= 200_000 && creator_profile.traction_score >= 1000 {
             4
         } else if creator_profile.markets_created >= 50 && creator_profile.total_volume >= 50_000 && creator_profile.traction_score >= 500 {
             3
@@ -816,7 +815,12 @@ pub mod contracts {
         
         if new_tier != current_tier {
             creator_profile.tier = new_tier;
+            
+            // Update market fee if the tier has changed
+            // Market fees will be updated only for new markets created after the tier change
+            
             msg!("Creator tier updated from {} to {}", current_tier, new_tier);
+            msg!("New creator fee: {}bps", get_creator_fee_bps(new_tier));
         } else {
             msg!("Creator tier remains at {}", current_tier);
         }
@@ -1535,7 +1539,21 @@ pub fn get_next_tier_threshold(profile: &CreatorProfile) -> Option<(u64, u32, u6
         1 => Some((10_000, 20, 300)),     // Tier 1 -> Tier 2: 10K volume, 20 markets, 300 traction
         2 => Some((50_000, 50, 500)),     // Tier 2 -> Tier 3: 50K volume, 50 markets, 500 traction
         3 => Some((200_000, 100, 1000)),  // Tier 3 -> Tier 4: 200K volume, 100 markets, 1000 traction
+        4 => Some((500_000, 200, 2000)),  // Tier 4 -> Tier 5: 500K volume, 200 markets, 2000 traction
         _ => None,                        // No higher tier available
+    }
+}
+
+// Helper function to get creator fee based on tier
+pub fn get_creator_fee_bps(tier: u8) -> u16 {
+    match tier {
+        0 => 150,  // Tier 0: 1.5%
+        1 => 175,  // Tier 1: 1.75%
+        2 => 200,  // Tier 2: 2%
+        3 => 300,  // Tier 3: 3%
+        4 => 400,  // Tier 4: 4%
+        5 => 500,  // Tier 5: 5%
+        _ => 150,  // Default to lowest fee
     }
 }
 
