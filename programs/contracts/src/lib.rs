@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+declare_id!("7Gh4eFGmobz5ngu2U3bgZiQm2Adwm33dQTsUwzRb7wBi");
 
 // Emitted events for off-chain indexing
 #[event]
@@ -828,7 +828,7 @@ pub mod contracts {
         let stats = &mut ctx.accounts.protocol_stats;
         
         // Update total markets
-        if let Some(markets) = &ctx.accounts.markets {
+        if let Some(_markets) = &ctx.accounts.markets {
             stats.total_markets = stats.total_markets.checked_add(1).unwrap();
         }
         

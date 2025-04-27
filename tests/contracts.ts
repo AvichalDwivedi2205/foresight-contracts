@@ -5,13 +5,13 @@ import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { Contracts } from "../target/types/contracts";
 
 // Program ID from declare_id!
-export const PROGRAM_ID = new PublicKey("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+export const PROGRAM_ID = new PublicKey("7Gh4eFGmobz5ngu2U3bgZiQm2Adwm33dQTsUwzRb7wBi");
 
-// Market types enum matching the Rust definition
-export enum MarketType {
-  TimeBound = 0,
-  OpenEnded = 1,
-}
+// Market types as constants instead of enum to avoid TypeScript enum incompatibility
+export const MarketType = {
+  TimeBound: 0,
+  OpenEnded: 1,
+} as const;
 
 // Program class
 export class PredictionMarketClient {
@@ -92,7 +92,7 @@ export class PredictionMarketClient {
     );
   }
 
-  // Instruction methods
+  
 
   async createCreatorProfile(creator: anchor.web3.Keypair): Promise<string> {
     return this.program.methods
