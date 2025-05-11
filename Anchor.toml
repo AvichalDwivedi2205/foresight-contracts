@@ -7,12 +7,17 @@ skip-lint = false
 [programs.localnet]
 contracts = "7Gh4eFGmobz5ngu2U3bgZiQm2Adwm33dQTsUwzRb7wBi"
 
+[programs.devnet]
+contracts = "7Gh4eFGmobz5ngu2U3bgZiQm2Adwm33dQTsUwzRb7wBi"
+
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+generate-data = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/generate_test_data.ts"
+deploy = "ts-node scripts/deploy.ts"

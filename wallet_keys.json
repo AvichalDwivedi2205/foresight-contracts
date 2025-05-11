@@ -1,0 +1,60 @@
+{
+  "admin": {
+    "publicKey": "4nQVUxfFaFjmz9esZxkBUUxgjDCyCcHMarHU8Ek7nGjy",
+    "secretKey": "2zY4w4N5V4Uhbh7GwNgcgLeNCvAe4zdicbz6fd7QG9RtctVeNi2Lm73JVanLuZR4Kn3M6MncCExzVDe5SiHfbPdq"
+  },
+  "creators": [
+    {
+      "index": 0,
+      "publicKey": "2WiVE4PXoihczwKjsRTwcKsnoC6Dt6btFnHQy6moTMz7",
+      "secretKey": "3o62zA9R4fAA5Aqb57gdzaA8P2TDrqCtkufL8aUvpRKEVas5r8sCkdLrD7zLspCaWUq1JAmsQbZDNAGwW5VXqRfM"
+    },
+    {
+      "index": 1,
+      "publicKey": "3nZ7cMzYaSuwKoYjME1nVN4bcfD5qD8eoPAu2wkt2atB",
+      "secretKey": "2UoS6yRxJjnCRgfTpawxAox3MLyAoTyWneekqk6edKXAKGgUNoyb6bg4Fccw1gUvzXdSgPJEw2amyBrerTBQVfPH"
+    },
+    {
+      "index": 2,
+      "publicKey": "9e9WcDRBjBqFUAoqpsw9KK1QnhU5MRDaNnHJrcq8xF9V",
+      "secretKey": "8SQyMNhz1thQmU1dY7XWyMUy1xKFCkkG65gE7TyvQHj819SjxRux9zaxqoTNU9HpRKMit75MstrJyXAm2JGawCX"
+    },
+    {
+      "index": 3,
+      "publicKey": "3CBu1EjqfKYcMshsnyJYg6ZM6VMGbuomLSoDzQ3VBkzp",
+      "secretKey": "2P88KtUPzFJNP3gdDxCpFYtd3QyyYHGAmCJ39vkRU8xumXmnuLDGkVCNQRe8WTVVALSmNcWMC5y6gGjJidD4yBtG"
+    },
+    {
+      "index": 4,
+      "publicKey": "5yzdzfopTjnSVi9xyFndRCPN1ERo8cscC2bytR5X9f3o",
+      "secretKey": "2AZ8r6f4mSA8j5S5Mj68dVcUDf5KiHmNQR1ztAcKjpgai2YFQZkiaJrRfRYdgma7tA89oTD2ttPNLtcL7Hkfu9Rj"
+    }
+  ],
+  "users": [
+    {
+      "index": 0,
+      "publicKey": "FMguXzGKzsFDspJxGHnj6RCmptPo5Q5zTDZ736bPnwHx",
+      "secretKey": "2p4DxZm93cFeLbAccN4StquWm3muhFnv2jSHynprSHc5dPZ5kBfR4YrVyL16MMgy3fhr4ypSYtvNQQr9q61KZdNe"
+    },
+    {
+      "index": 1,
+      "publicKey": "4Td8v8rRxDiaS9S6wR9zifeQBYpoQvFMqF2SvZF7fYwS",
+      "secretKey": "kx9sNQdcHQM91SpZRDJT59ocgYxJJtJ3RTiYR7EztSKk2Z4VRQExuGqZoj8ZtaJUZQdwgCVi75DJUYJq5LJiVzG"
+    },
+    {
+      "index": 2,
+      "publicKey": "9Qvg5NHG9eJpDq9yX3o3yid1hn2FshE1KcLr9ZeMfph9",
+      "secretKey": "2rTRn6F2KUsWfPiaNzRRJXiufroB1dbrPawfWug9ZVopzMEoKMjpEVos3PHNqWicd9DfHfPTTk9igk8PkdCgReZ1"
+    },
+    {
+      "index": 3,
+      "publicKey": "45H8PYkSaberPD6fCzxur8VVSzs9x6zuVf9xUpMnTM76",
+      "secretKey": "5XkxaaV2PXZQxv9Xa2F4aHrDvA9WxvrQX6npijURc5oegoyRj128bEFHw2mhC9yJAFMF7fGgADffGxNrAXWkKrwJ"
+    },
+    {
+      "index": 4,
+      "publicKey": "9A1xrfGwKBb5JN2iSxDtaKqPbtvzXnvqjGMexxQGK3i2",
+      "secretKey": "EyqAEgGLKwGzqHBTocbF7ToRpfpZp56Dm7DZF3CXoj648a1msBoBMMgpToUxZmw2APXgZGkBHSfwLeaF4i86Jga"
+    }
+  ]
+}
