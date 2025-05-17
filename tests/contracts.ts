@@ -4,16 +4,13 @@ import { PublicKey, SystemProgram } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { Contracts } from "../target/types/contracts";
 
-// Program ID from declare_id!
 export const PROGRAM_ID = new PublicKey("7Gh4eFGmobz5ngu2U3bgZiQm2Adwm33dQTsUwzRb7wBi");
 
-// Market types as constants instead of enum to avoid TypeScript enum incompatibility
 export const MarketType = {
   TimeBound: 0,
   OpenEnded: 1,
 } as const;
 
-// Program class
 export class PredictionMarketClient {
   readonly program: Program<Contracts>;
   readonly provider: anchor.AnchorProvider;

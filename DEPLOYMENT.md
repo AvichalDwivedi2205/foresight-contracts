@@ -65,19 +65,34 @@ anchor deploy --provider.cluster devnet
 
 After deploying, you can generate test data:
 
+**For Localnet:**
 ```bash
 npm run generate-data
 ```
 
-This will:
-- Create 5 participants with both creator and user profiles
-- Fund each participant with 0.5 SOL
-- Each participant will create 3 prediction markets
-- Participants will make predictions on each other's markets
+**For Devnet with funded wallets:**
 
-The script will output wallet keys and test data to:
-- `generated_data.json`: Full test data
-- `wallet_keys.json`: Wallet-compatible keys
+The following command will use the existing wallets from generated_data.json that have already been funded (5 SOL each) and will create 30 markets (6 per creator) on Devnet:
+
+```bash
+npm run generate-devnet-data
+```
+
+**Generated Files:**
+- `generated_data.json`: Contains test data with masked private keys (safe to commit)
+- `secure_keys.json`: Contains actual private keys (don't commit this file)
+- `wallet_keys.json`: Contains wallet keys in base58 format (don't commit this file)
+
+**Masking Private Keys:**
+If you already have a generated_data.json file with exposed private keys, you can mask them:
+
+```bash
+npm run mask-keys
+```
+
+This will create a `secure_keys.json` file with the actual keys and update `generated_data.json` to use `[REDACTED]` instead of the actual private keys.
+
+The script will also add `secure_keys.json` to `.gitignore` to prevent accidentally committing the private keys.
 
 ### 6. Use the contract on your frontend
 

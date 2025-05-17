@@ -5,3 +5,6 @@ target
 node_modules
 test-ledger
 .yarn
+generated_data.json
+secure_keys.json
+wallet_keys.json

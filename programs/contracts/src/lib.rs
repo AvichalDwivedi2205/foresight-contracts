@@ -3,7 +3,14 @@ use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
 declare_id!("7Gh4eFGmobz5ngu2U3bgZiQm2Adwm33dQTsUwzRb7wBi");
 
-// Emitted events for off-chain indexing
+// Hardcoded admin public key for security
+pub const ADMIN_PUBKEY: &str = "4nQVUxfFaFjmz9esZxkBUUxgjDCyCcHMarHU8Ek7nGjy";
+
+// Function to validate admin authority
+pub fn is_admin(admin_key: &Pubkey) -> bool {
+    admin_key.to_string() == ADMIN_PUBKEY
+}
+
 #[event]
 pub struct MarketCreatedEvent {
     pub market: Pubkey,
@@ -65,6 +72,9 @@ pub mod contracts {
     pub fn initialize_ai_resolver(
         ctx: Context<InitializeAIResolver>,
     ) -> Result<()> {
+        // Validate that only the authorized admin can initialize the resolver
+        require!(is_admin(&ctx.accounts.admin.key()), ErrorCode::Unauthorized);
+        
         let resolver = &mut ctx.accounts.ai_resolver;
         resolver.authority = ctx.accounts.admin.key();
         resolver.active = true;
@@ -126,7 +136,7 @@ pub mod contracts {
         ai_recommended_resolution_time: i64,
         ai_classification: u8,
         creator_metadata: String,
-        creator_fee_bps: Option<u16>,  // This parameter is kept for backward compatibility
+        _creator_fee_bps: Option<u16>,  
         ai_resolvable: Option<bool>, 
     ) -> Result<()> {
         require!(outcomes.len() <= 5, ErrorCode::TooManyOutcomes);
@@ -145,19 +155,18 @@ pub mod contracts {
         );
 
         let creator_profile = &mut ctx.accounts.creator_profile;
-        let five_days_in_seconds = 5 * 24 * 60 * 60;
+        let _five_days_in_seconds = 5 * 24 * 60 * 60;
         
-        if creator_profile.tier == 0 && creator_profile.last_created_at > 0 {
-            require!(
-                clock.unix_timestamp - creator_profile.last_created_at >= five_days_in_seconds,
-                ErrorCode::CreatorOnCooldown
-            );
-        }
+        // TEMPORARILY DISABLED: removing cooldown for tier 0 creators
+        // if creator_profile.tier == 0 && creator_profile.last_created_at > 0 {
+        //     require!(
+        //         clock.unix_timestamp - creator_profile.last_created_at >= five_days_in_seconds,
+        //         ErrorCode::CreatorOnCooldown
+        //     );
+        // }
         
-        // Set fee based on creator tier instead of user-specified fee
         let fee_bps = get_creator_fee_bps(creator_profile.tier);
         
-        // Initialize market account
         let market = &mut ctx.accounts.market;
         market.creator = ctx.accounts.creator.key();
         market.question = question.clone();
@@ -237,24 +246,17 @@ pub mod contracts {
         market.stakes_per_outcome[outcome_index as usize] = 
             market.stakes_per_outcome[outcome_index as usize].checked_add(amount).unwrap();
         
-        // Update creator profile stats
         let creator_profile = &mut ctx.accounts.creator_profile;
         creator_profile.total_volume = creator_profile.total_volume.checked_add(amount).unwrap();
         
-        // For traction score, we increase it based on activity
-        // The score increases more when:
-        // - Multiple users participate in a market
-        // - Higher amounts are staked
         creator_profile.traction_score = creator_profile.traction_score.checked_add(amount / 1000 + 1).unwrap();
         
-        // Update user profile if provided
         if let Some(user_profile) = &mut ctx.accounts.user_profile {
             user_profile.total_staked = user_profile.total_staked.checked_add(amount).unwrap();
             user_profile.total_predictions = user_profile.total_predictions.checked_add(1).unwrap();
             user_profile.last_active_ts = current_time;
         }
         
-        // Check if creator tier needs to be updated
         let previous_tier = creator_profile.tier;
         if let Some(creator_tier_threshold) = get_next_tier_threshold(creator_profile) {
             if creator_profile.total_volume >= creator_tier_threshold.0 && 
@@ -262,7 +264,6 @@ pub mod contracts {
                creator_profile.traction_score >= creator_tier_threshold.2 {
                 creator_profile.tier = creator_profile.tier.checked_add(1).unwrap();
                 
-                // Emit event if tier changed
                 if creator_profile.tier != previous_tier {
                     emit!(CreatorTierChangedEvent {
                         creator: creator_profile.creator,
@@ -276,7 +277,6 @@ pub mod contracts {
             }
         }
         
-        // Emit prediction staked event for indexers
         emit!(PredictionStakedEvent {
             user: ctx.accounts.user.key(),
             market: market.key(),
@@ -336,11 +336,8 @@ pub mod contracts {
     ) -> Result<()> {
         let market = &mut ctx.accounts.market;
         
-        let admin_key = ctx.accounts.admin.key();
-        require!(
-            admin_key == ctx.accounts.admin.key(),
-            ErrorCode::Unauthorized
-        );
+        // Validate that only the authorized admin can resolve markets
+        require!(is_admin(&ctx.accounts.admin.key()), ErrorCode::Unauthorized);
         
         require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
         
@@ -411,6 +408,7 @@ pub mod contracts {
         ];
         let signer = &[&seeds[..]];
         
+        // Transfer rewards to user
         {
             let cpi_accounts = Transfer {
                 from: ctx.accounts.market_vault.to_account_info(),
@@ -452,7 +450,6 @@ pub mod contracts {
         
         prediction.claimed = true;
         
-        // Update user profile if provided to track winnings
         if let Some(user_profile) = &mut ctx.accounts.user_profile {
             user_profile.total_winnings = user_profile.total_winnings.checked_add(reward_amount).unwrap();
             user_profile.winning_predictions = user_profile.winning_predictions.checked_add(1).unwrap();
@@ -472,7 +469,6 @@ pub mod contracts {
                    creator_profile.traction_score >= creator_tier_threshold.2 {
                     creator_profile.tier = creator_profile.tier.checked_add(1).unwrap();
                     
-                    // Emit event if tier changed
                     if creator_profile.tier != previous_tier {
                         emit!(CreatorTierChangedEvent {
                             creator: creator_profile.creator,
@@ -486,8 +482,7 @@ pub mod contracts {
                 }
             }
         }
-        
-        // Emit reward claimed event for indexers
+
         emit!(RewardClaimedEvent {
             user: ctx.accounts.user.key(),
             market: market.key(),
@@ -509,6 +504,8 @@ pub mod contracts {
     }
 
     pub fn close_market(ctx: Context<CloseMarket>) -> Result<()> {
+        // Validate that only the authorized admin can close markets
+        require!(is_admin(&ctx.accounts.admin.key()), ErrorCode::Unauthorized);
         
         let market = &ctx.accounts.market;
         
@@ -522,7 +519,8 @@ pub mod contracts {
         ctx: Context<RegisterVoteAuthority>,
         weight: u8,
     ) -> Result<()> {
-        let _admin_key = ctx.accounts.admin.key();
+        // Validate that only the authorized admin can register vote authorities
+        require!(is_admin(&ctx.accounts.admin.key()), ErrorCode::Unauthorized);
         
         require!(weight >= 1 && weight <= 5, ErrorCode::InvalidWeight);
         
@@ -530,8 +528,7 @@ pub mod contracts {
             ctx.accounts.market.market_type == MarketType::OpenEnded as u8,
             ErrorCode::NotOpenEndedMarket
         );
-        
-        // Initialize vote authority
+    
         let authority = &mut ctx.accounts.vote_authority;
         authority.market = ctx.accounts.market.key();
         authority.authority = ctx.accounts.authority.key();
@@ -547,6 +544,9 @@ pub mod contracts {
     pub fn initialize_vote_result(
         ctx: Context<InitializeVoteResult>,
     ) -> Result<()> {
+        // Validate that only the authorized admin can initialize vote results
+        require!(is_admin(&ctx.accounts.admin.key()), ErrorCode::Unauthorized);
+        
         let market = &ctx.accounts.market;
         
         require!(
@@ -573,6 +573,54 @@ pub mod contracts {
         vote_result.bump = ctx.bumps.vote_result;
         
         msg!("Vote result initialized for market {}", market.key());
+        Ok(())
+    }
+
+    pub fn finalize_resolution(
+        ctx: Context<FinalizeResolution>,
+    ) -> Result<()> {
+        // Validate that only the authorized admin can finalize resolutions
+        require!(is_admin(&ctx.accounts.admin.key()), ErrorCode::Unauthorized);
+        
+        let market = &mut ctx.accounts.market;
+        let vote_result = &mut ctx.accounts.vote_result;
+        
+        require!(
+            market.market_type == MarketType::OpenEnded as u8,
+            ErrorCode::NotOpenEndedMarket
+        );
+        
+        require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
+        require!(vote_result.resolution_proposed, ErrorCode::NoProposedResolution);
+        
+        let clock = Clock::get()?;
+        let challenge_deadline = vote_result.proposal_time.checked_add(48 * 60 * 60).unwrap(); 
+        
+        require!(
+            clock.unix_timestamp > challenge_deadline,
+            ErrorCode::ChallengePeriodActive
+        );
+        
+        if vote_result.challenge_count > 0 {
+            let mut max_stake = 0;
+            let mut winning_index = 0;
+            
+            for (i, &stake) in vote_result.stake_weights.iter().enumerate() {
+                if stake > max_stake {
+                    max_stake = stake;
+                    winning_index = i;
+                }
+            }
+            
+            vote_result.proposed_outcome = Some(winning_index as u8);
+            msg!("Resolution determined by stake-weighted vote: outcome {}", winning_index);
+        }
+        
+        market.winning_outcome = vote_result.proposed_outcome;
+        market.resolved = true;
+        vote_result.finalized = true;
+        
+        msg!("Market resolution finalized with outcome {:?}", market.winning_outcome);
         Ok(())
     }
 
@@ -687,51 +735,6 @@ pub mod contracts {
         Ok(())
     }
 
-    pub fn finalize_resolution(
-        ctx: Context<FinalizeResolution>,
-    ) -> Result<()> {
-        let market = &mut ctx.accounts.market;
-        let vote_result = &mut ctx.accounts.vote_result;
-        
-        require!(
-            market.market_type == MarketType::OpenEnded as u8,
-            ErrorCode::NotOpenEndedMarket
-        );
-        
-        require!(!market.resolved, ErrorCode::MarketAlreadyResolved);
-        require!(vote_result.resolution_proposed, ErrorCode::NoProposedResolution);
-        
-        let clock = Clock::get()?;
-        let challenge_deadline = vote_result.proposal_time.checked_add(48 * 60 * 60).unwrap(); 
-        
-        require!(
-            clock.unix_timestamp > challenge_deadline,
-            ErrorCode::ChallengePeriodActive
-        );
-        
-        if vote_result.challenge_count > 0 {
-            let mut max_stake = 0;
-            let mut winning_index = 0;
-            
-            for (i, &stake) in vote_result.stake_weights.iter().enumerate() {
-                if stake > max_stake {
-                    max_stake = stake;
-                    winning_index = i;
-                }
-            }
-            
-            vote_result.proposed_outcome = Some(winning_index as u8);
-            msg!("Resolution determined by stake-weighted vote: outcome {}", winning_index);
-        }
-        
-        market.winning_outcome = vote_result.proposed_outcome;
-        market.resolved = true;
-        vote_result.finalized = true;
-        
-        msg!("Market resolution finalized with outcome {:?}", market.winning_outcome);
-        Ok(())
-    }
-
     pub fn challenge_resolution(
         ctx: Context<ChallengeResolution>,
         evidence: String,
@@ -757,6 +760,9 @@ pub mod contracts {
     }
 
     pub fn initialize_protocol_stats(ctx: Context<InitializeProtocolStats>) -> Result<()> {
+        // Validate that only the authorized admin can initialize protocol stats
+        require!(is_admin(&ctx.accounts.admin.key()), ErrorCode::Unauthorized);
+        
         let stats = &mut ctx.accounts.protocol_stats;
         
         stats.total_volume = 0;
@@ -788,6 +794,9 @@ pub mod contracts {
     }
 
     pub fn update_creator_tier(ctx: Context<UpdateCreatorTier>) -> Result<()> {
+        // Validate that only the authorized admin can update creator tiers
+        require!(is_admin(&ctx.accounts.admin.key()), ErrorCode::Unauthorized);
+        
         let creator_profile = &mut ctx.accounts.creator_profile;
         let current_tier = creator_profile.tier;
         
@@ -798,6 +807,7 @@ pub mod contracts {
         // Tier 3: Expert (50+ markets, 50,000+ volume, high traction) (3% fee)
         // Tier 4: Elite (100+ markets, 200,000+ volume, very high traction) (4% fee)
         // Tier 5: Master (200+ markets, 500,000+ volume, exceptional traction) (5% fee)
+        // This is just for the hackathon, we will change this to a more complex tier system in the future
         
         let new_tier = if creator_profile.markets_created >= 200 && creator_profile.total_volume >= 500_000 && creator_profile.traction_score >= 2000 {
             5
@@ -816,8 +826,6 @@ pub mod contracts {
         if new_tier != current_tier {
             creator_profile.tier = new_tier;
             
-            // Update market fee if the tier has changed
-            // Market fees will be updated only for new markets created after the tier change
             
             msg!("Creator tier updated from {} to {}", current_tier, new_tier);
             msg!("New creator fee: {}bps", get_creator_fee_bps(new_tier));
@@ -829,20 +837,20 @@ pub mod contracts {
     }
 
     pub fn update_protocol_stats(ctx: Context<UpdateProtocolStats>) -> Result<()> {
-        let stats = &mut ctx.accounts.protocol_stats;
+        // Validate that only the authorized admin can update protocol stats
+        require!(is_admin(&ctx.accounts.admin.key()), ErrorCode::Unauthorized);
         
-        // Update total markets
+        let stats = &mut ctx.accounts.protocol_stats;
+
         if let Some(_markets) = &ctx.accounts.markets {
             stats.total_markets = stats.total_markets.checked_add(1).unwrap();
         }
         
-        // Update total volume if stake occurred
         if let Some(prediction) = &ctx.accounts.prediction {
             stats.total_volume = stats.total_volume.checked_add(prediction.amount).unwrap();
             stats.total_stakes = stats.total_stakes.checked_add(1).unwrap();
         }
-        
-        // Update total resolved markets if market resolved
+                
         if let Some(market) = &ctx.accounts.market {
             if market.resolved && !stats.resolved_markets.contains(&market.key()) {
                 // Keep only the 20 most recent resolved markets
@@ -878,7 +886,7 @@ pub struct CreateCreatorProfile<'info> {
 
 #[derive(Accounts)]
 pub struct InitializeAIResolver<'info> {
-    #[account(mut)]
+    #[account(mut, constraint = is_admin(&admin.key()) @ ErrorCode::Unauthorized)]
     pub admin: Signer<'info>,
     
     #[account(
@@ -1019,7 +1027,7 @@ pub struct VoteMarketOutcome<'info> {
 
 #[derive(Accounts)]
 pub struct ResolveMarket<'info> {
-    #[account(mut)]
+    #[account(mut, constraint = is_admin(&admin.key()) @ ErrorCode::Unauthorized)]
     pub admin: Signer<'info>,
     
     #[account(mut)]
@@ -1093,7 +1101,7 @@ pub struct ClaimReward<'info> {
 
 #[derive(Accounts)]
 pub struct CloseMarket<'info> {
-    #[account(mut)]
+    #[account(mut, constraint = is_admin(&admin.key()) @ ErrorCode::Unauthorized)]
     pub admin: Signer<'info>,
     
     #[account(
@@ -1116,7 +1124,7 @@ pub struct CloseMarket<'info> {
 
 #[derive(Accounts)]
 pub struct RegisterVoteAuthority<'info> {
-    #[account(mut)]
+    #[account(mut, constraint = is_admin(&admin.key()) @ ErrorCode::Unauthorized)]
     pub admin: Signer<'info>,
     
     #[account(mut)]
@@ -1138,7 +1146,7 @@ pub struct RegisterVoteAuthority<'info> {
 
 #[derive(Accounts)]
 pub struct InitializeVoteResult<'info> {
-    #[account(mut)]
+    #[account(mut, constraint = is_admin(&admin.key()) @ ErrorCode::Unauthorized)]
     pub admin: Signer<'info>,
     
     #[account(mut)]
@@ -1217,7 +1225,7 @@ pub struct ProposeResolution<'info> {
 
 #[derive(Accounts)]
 pub struct FinalizeResolution<'info> {
-    #[account(mut)]
+    #[account(mut, constraint = is_admin(&admin.key()) @ ErrorCode::Unauthorized)]
     pub admin: Signer<'info>, 
     
     #[account(mut)]
@@ -1270,7 +1278,7 @@ pub struct InitializeUserProfile<'info> {
 
 #[derive(Accounts)]
 pub struct UpdateCreatorTier<'info> {
-    #[account(mut)]
+    #[account(mut, constraint = is_admin(&admin.key()) @ ErrorCode::Unauthorized)]
     pub admin: Signer<'info>,
     
     #[account(mut)]
@@ -1281,7 +1289,7 @@ pub struct UpdateCreatorTier<'info> {
 
 #[derive(Accounts)]
 pub struct InitializeProtocolStats<'info> {
-    #[account(mut)]
+    #[account(mut, constraint = is_admin(&admin.key()) @ ErrorCode::Unauthorized)]
     pub admin: Signer<'info>,
     
     #[account(
@@ -1298,7 +1306,7 @@ pub struct InitializeProtocolStats<'info> {
 
 #[derive(Accounts)]
 pub struct UpdateProtocolStats<'info> {
-    #[account(mut)]
+    #[account(mut, constraint = is_admin(&admin.key()) @ ErrorCode::Unauthorized)]
     pub admin: Signer<'info>,
     
     #[account(mut)]
