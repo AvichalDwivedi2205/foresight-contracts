@@ -157,13 +157,22 @@ pub mod contracts {
         let creator_profile = &mut ctx.accounts.creator_profile;
         let _five_days_in_seconds = 5 * 24 * 60 * 60;
         
-        // TEMPORARILY DISABLED: removing cooldown for tier 0 creators
-        // if creator_profile.tier == 0 && creator_profile.last_created_at > 0 {
-        //     require!(
-        //         clock.unix_timestamp - creator_profile.last_created_at >= five_days_in_seconds,
-        //         ErrorCode::CreatorOnCooldown
-        //     );
-        // }
+        if creator_profile.last_created_at > 0 {
+            let cooldown_seconds = match creator_profile.tier {
+                0 => 6 * 24 * 60 * 60, 
+                1 => 5 * 24 * 60 * 60,  
+                2 => 4 * 24 * 60 * 60,  
+                3 => 3 * 24 * 60 * 60, 
+                4 => 2 * 24 * 60 * 60,  
+                5 => 1 * 24 * 60 * 60,  
+                _ => 6 * 24 * 60 * 60,  
+            };
+            
+            require!(
+                clock.unix_timestamp - creator_profile.last_created_at >= cooldown_seconds,
+                ErrorCode::CreatorOnCooldown
+            );
+        }
         
         let fee_bps = get_creator_fee_bps(creator_profile.tier);
         
@@ -456,13 +465,10 @@ pub mod contracts {
             user_profile.last_active_ts = Clock::get()?.unix_timestamp;
         }
         
-        // Update creator profile with additional volume and traction
         if let Some(creator_profile) = &mut ctx.accounts.creator_profile {
-            // Successful predictions increase traction score more
             creator_profile.traction_score = creator_profile.traction_score.checked_add(reward_amount / 500 + 5).unwrap();
             
             let previous_tier = creator_profile.tier;
-            // Check if creator tier needs to be updated
             if let Some(creator_tier_threshold) = get_next_tier_threshold(creator_profile) {
                 if creator_profile.total_volume >= creator_tier_threshold.0 && 
                    creator_profile.markets_created >= creator_tier_threshold.1 && 
@@ -504,7 +510,6 @@ pub mod contracts {
     }
 
     pub fn close_market(ctx: Context<CloseMarket>) -> Result<()> {
-        // Validate that only the authorized admin can close markets
         require!(is_admin(&ctx.accounts.admin.key()), ErrorCode::Unauthorized);
         
         let market = &ctx.accounts.market;
@@ -519,7 +524,6 @@ pub mod contracts {
         ctx: Context<RegisterVoteAuthority>,
         weight: u8,
     ) -> Result<()> {
-        // Validate that only the authorized admin can register vote authorities
         require!(is_admin(&ctx.accounts.admin.key()), ErrorCode::Unauthorized);
         
         require!(weight >= 1 && weight <= 5, ErrorCode::InvalidWeight);
@@ -544,7 +548,6 @@ pub mod contracts {
     pub fn initialize_vote_result(
         ctx: Context<InitializeVoteResult>,
     ) -> Result<()> {
-        // Validate that only the authorized admin can initialize vote results
         require!(is_admin(&ctx.accounts.admin.key()), ErrorCode::Unauthorized);
         
         let market = &ctx.accounts.market;
